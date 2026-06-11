@@ -1,0 +1,14 @@
+# Future shared runtime files
+.env
+.env.local
+
+# Logs
+logs/
+apps/*/logs/
+
+# PID and temp files
+*.pid
+*.log
+tmp/
+apps/*/.run/
+apps/*/runtime/

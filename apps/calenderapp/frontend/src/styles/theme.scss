@@ -1,0 +1,191 @@
+$app-bg: #f5f7fb;
+$app-bg-dark: #0b1220;
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: $app-bg;
+  color: #1f2937;
+}
+
+.dark body {
+  background: $app-bg-dark;
+  color: #e5e7eb;
+}
+
+#app {
+  min-height: 100%;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 56px;
+  padding: 0 16px;
+  background: #0b1220;
+  color: #ffffff;
+}
+
+.dark .app-header {
+  background: #050816;
+}
+
+.app-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.app-main {
+  padding: 16px;
+}
+
+.card {
+  border-radius: 12px;
+}
+
+.fc {
+  --fc-border-color: rgba(148, 163, 184, 0.35);
+  --fc-today-bg-color: rgba(59, 130, 246, 0.08);
+}
+
+.dark .fc {
+  --fc-border-color: rgba(148, 163, 184, 0.22);
+  --fc-today-bg-color: rgba(59, 130, 246, 0.14);
+  --fc-neutral-bg-color: rgba(15, 23, 42, 0.45);
+  --fc-neutral-text-color: rgba(226, 232, 240, 0.92);
+  --sc-fc-header-bg: rgba(15, 23, 42, 0.45);
+  --sc-fc-header-bg-hover: rgba(15, 23, 42, 0.62);
+  --sc-fc-header-bg-active: rgba(59, 130, 246, 0.18);
+  --sc-fc-header-text: rgba(226, 232, 240, 0.92);
+}
+
+.fc .fc-toolbar-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.fc .fc-button {
+  border-radius: 10px;
+}
+
+.fc .fc-daygrid-day-top {
+  justify-content: center;
+}
+
+.fc .fc-daygrid-day-number {
+  padding: 6px 6px 4px;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.fc .sc-daycell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  line-height: 1.05;
+}
+
+.fc .sc-solar {
+  font-weight: 800;
+}
+
+.fc .sc-lunar {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(100, 116, 139, 0.95);
+}
+
+.dark .fc .sc-lunar {
+  color: rgba(203, 213, 225, 0.85);
+}
+
+.fc .sc-holiday {
+  color: rgba(239, 68, 68, 0.95);
+}
+
+.dark .fc .sc-holiday {
+  color: rgba(248, 113, 113, 0.92);
+}
+
+.dark .fc .fc-scrollgrid-section-header th {
+  background: var(--sc-fc-header-bg);
+}
+
+.dark .fc .fc-col-header-cell {
+  border-color: var(--fc-border-color);
+}
+
+.dark .fc .fc-col-header-cell-cushion {
+  color: var(--sc-fc-header-text);
+  font-weight: 700;
+}
+
+.dark .fc .fc-col-header-cell:hover {
+  background: var(--sc-fc-header-bg-hover);
+}
+
+.dark .fc .fc-col-header-cell:focus-within {
+  background: var(--sc-fc-header-bg-active);
+}
+
+.dark .fc .fc-col-header-cell.fc-day-today {
+  background: var(--fc-today-bg-color);
+}
+
+.dark .fc .fc-col-header-cell-cushion:focus {
+  outline: 2px solid rgba(59, 130, 246, 0.55);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.fc .fc-daygrid-event {
+  border-radius: 8px;
+  padding: 0 6px;
+}
+
+.fc .fc-daygrid-event .fc-event-main {
+  padding: 0;
+}
+
+.fc .sc-evt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 20px;
+  min-height: 20px;
+}
+
+.fc .sc-evt-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.fc .sc-evt-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fc .fc-more-link {
+  font-size: 12px;
+  font-weight: 600;
+}
