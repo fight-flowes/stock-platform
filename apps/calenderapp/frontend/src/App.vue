@@ -7,6 +7,7 @@
       </div>
       <div style="display: flex; align-items: center; gap: 8px">
         <el-button text @click="$router.push('/')">涨停</el-button>
+        <el-button text @click="$router.push('/announcements')">公告</el-button>
         <el-button text @click="$router.push('/events')">事件</el-button>
         <el-button text @click="$router.push('/stocks')">股票</el-button>
         <el-button text @click="$router.push('/calendar')">日历</el-button>

@@ -13,6 +13,7 @@ from app.api.system import system_ns
 from app.api.limit_up import limit_up_ns
 from app.api.partition import partition_ns
 from app.api.stockkb import stockkb_ns
+from app.api.announcements import announcements_ns
 from app.db import Base, engine, ensure_schema
 from app.models import CalendarDay, CalendarEvent, LimitUpStock, Stock
 from config.api_config import APIConstants, APIResponse
@@ -49,6 +50,7 @@ def create_app():
     api.add_namespace(limit_up_ns, path="/api/limit-up")
     api.add_namespace(partition_ns, path="/api/partition")
     api.add_namespace(stockkb_ns, path="/api/stockkb")
+    api.add_namespace(announcements_ns, path="/api/announcements")
 
     @app.get("/health")
     def health():

@@ -5,6 +5,7 @@ import EventsView from '../views/EventsView.vue'
 import StocksView from '../views/StocksView.vue'
 import LimitUpView from '../views/LimitUpView.vue'
 import LoginView from '../views/LoginView.vue'
+import AnnouncementsView from '../views/AnnouncementsView.vue'
 
 const routes = [
   {
@@ -17,6 +18,12 @@ const routes = [
     path: '/',
     name: 'limit-up',
     component: LimitUpView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/announcements',
+    name: 'announcements',
+    component: AnnouncementsView,
     meta: { requiresAuth: true }
   },
   {

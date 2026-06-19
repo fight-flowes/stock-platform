@@ -1,0 +1,27 @@
+# DuckDB + raw cache files are large and not source-controllable
+data/*.duckdb
+data/*.duckdb.tmp
+data/*.duckdb.wal
+data/raw_cache/
+
+# Logs
+logs/
+
+# Local env
+.env
+.env.local
+
+# Python bits
+__pycache__/
+*.pyc
+.eggs/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+build/
+dist/
+
+# Editor
+.vscode/
+.idea/

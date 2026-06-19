@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eventradar"
+version = "0.0.1"
+description = "Forward-looking event radar for the A-share market — placeholder skeleton"
+requires-python = ">=3.10"
+dependencies = [
+  # Core data + storage. akshare itself is intentionally absent at this
+  # stage; the first adapter PR adds it. Keeping it out now means the
+  # skeleton installs in seconds even on a fresh machine.
+  "duckdb>=1.0.0",
+  "fastapi>=0.115.0",
+  "pydantic>=2.8.0",
+  "python-dotenv>=1.0.1",
+  "uvicorn>=0.30.0",
+  # pandas comes via duckdb in practice, but akshare-driven adapters need
+  # it directly so list it explicitly to keep the dependency picture honest.
+  "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+# Adapter dependencies live in their own extra so a stripped-down deploy
+# (pure API server / read replica) doesn't pull akshare and its scrapers.
+adapters = [
+  "akshare>=1.18.0",
+  "requests>=2.32.0",
+  "pyarrow>=15.0.0",      # parquet writer for raw_cache
+]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.6.0",
+]
+
+[project.scripts]
+eventradar = "eventradar.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
