@@ -12,11 +12,12 @@ a row fails to parse, log it and skip just that row. Use
 :func:`eventradar.normalize.event_type_map.map_event_type` for the type
 column; never invent new enum values inline.
 
-The list below is the M1+M2 target. Files are placeholder-only at this
-stage — each one lands with its own PR.
+Importing this package side-effect-registers every adapter into
+``eventradar.service.ADAPTERS``.
 """
 
-# Adapters will register themselves here as they land. Today the package is
-# empty on purpose; importing eventradar.sources.adapters is a no-op.
+# Importing the module is what registers the adapter into the global
+# ADAPTERS table — see the bottom of each adapter file.
+from . import company_calendar_em  # noqa: F401
 
-__all__: list[str] = []
+__all__ = ["company_calendar_em"]

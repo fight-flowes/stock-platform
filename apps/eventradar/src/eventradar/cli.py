@@ -31,6 +31,12 @@ from typing import Any
 
 from .config import get_settings
 from .service import ADAPTERS, EventradarService
+# Importing this package registers every adapter into ``ADAPTERS`` via
+# side-effect (each adapter module appends itself at import time). Doing
+# the import here, at the CLI entrypoint, keeps ``service.py`` itself
+# free of cross-module imports — which would otherwise become circular
+# (adapters → sources → service).
+from .sources import adapters as _adapters  # noqa: F401
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,9 +52,16 @@ def _setup_logging(verbose: bool) -> None:
 def _coerce_kv(raw: str) -> tuple[str, Any]:
     """Parse ``--key=value`` into a Python value.
 
-    Accepts ints, floats, bools, JSON, and falls back to the raw string.
-    Adapter authors should keep argument types simple (string + int +
-    YYYYMMDD date strings) so this stays predictable.
+    Type coercion is intentionally conservative:
+        - bool words (``true``/``false``) become bool
+        - JSON-shaped values (``[...]`` / ``{...}``) get json.loads
+        - everything else stays a string
+
+    We deliberately do NOT auto-convert all-digit values to int —
+    YYYYMMDD dates would otherwise lose their leading zeros and silently
+    parse as 8-digit ints, which then look like Unix epoch seconds to
+    downstream date parsers. Adapters that expect an int kwarg should
+    cast inside themselves; CLI strings stay strings.
     """
     if "=" not in raw:
         raise argparse.ArgumentTypeError(f"expected key=value, got {raw!r}")
@@ -59,14 +72,6 @@ def _coerce_kv(raw: str) -> tuple[str, Any]:
         raise argparse.ArgumentTypeError(f"empty key in {raw!r}")
     if value.lower() in {"true", "false"}:
         return key, value.lower() == "true"
-    try:
-        return key, int(value)
-    except ValueError:
-        pass
-    try:
-        return key, float(value)
-    except ValueError:
-        pass
     if value.startswith(("[", "{")):
         try:
             return key, json.loads(value)

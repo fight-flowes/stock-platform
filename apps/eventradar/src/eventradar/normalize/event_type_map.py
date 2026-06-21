@@ -22,17 +22,21 @@ EVENT_TYPE_VALUES: tuple[str, ...] = (
     "rights_issue",          # 配股
     "secondary_offering",    # 增发
     "ipo_subscribe",         # 新股申购
-    "ipo_listing",           # 新股上市
-    "buyback",               # 回购
-    "name_change",           # 更名
-    "suspend",               # 停牌
-    "resume",                # 复牌
-    "earnings_forecast",     # 业绩预告
-    "earnings_express",      # 业绩快报
-    "earnings_disclose",     # 财报预约披露
-    "macro_data",            # 宏观数据发布
-    "policy_meeting",        # 政策性会议
-    "industry_event",        # 行业活动 / 展会
+    "ipo_listing",            # 新股上市
+    "buyback",                # 回购
+    "name_change",            # 更名
+    "suspend",                # 停牌
+    "resume",                 # 复牌
+    "earnings_forecast",      # 业绩预告
+    "earnings_express",       # 业绩快报
+    "earnings_disclose",      # 财报预约披露
+    "macro_data",             # 宏观数据发布
+    "policy_meeting",         # 政策性会议
+    "industry_event",         # 行业活动 / 展会
+    # 东方财富股市日历 (gsdt) 高频事件 —— 本质上是"已公告但有未来时点"的公司动态
+    "restructuring",          # 资产重组 / 资产收购
+    "guarantee",              # 对外担保
+    "pledge",                 # 股份质押 / 解除质押
     "other",
 )
 
@@ -45,6 +49,7 @@ EVENT_TYPE_VALUES: tuple[str, ...] = (
 #     `python -m eventradar.normalize.event_type_map "原始事件类型"`
 # (CLI hook lives at the bottom of this file).
 _RAW_TO_TYPE: tuple[tuple[str, str], ...] = (
+    # --- date-anchored "calendar" events ---
     ("限售", "unlock"),
     ("解禁", "unlock"),
     ("股东大会", "shareholders_meeting"),
@@ -73,6 +78,16 @@ _RAW_TO_TYPE: tuple[tuple[str, str], ...] = (
     ("会议", "policy_meeting"),
     ("展会", "industry_event"),
     ("发布会", "industry_event"),
+    # --- 东财 gsdt 公司动态 ---
+    # 顺序：先匹配"解除质押"/"质押解除"再匹配"质押"，避免被前者吞掉
+    ("解除质押", "pledge"),
+    ("质押解除", "pledge"),
+    ("质押", "pledge"),
+    ("资产重组", "restructuring"),
+    ("资产收购", "restructuring"),
+    ("重大资产", "restructuring"),
+    ("对外担保", "guarantee"),
+    ("担保", "guarantee"),
 )
 
 

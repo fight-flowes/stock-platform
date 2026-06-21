@@ -10,17 +10,15 @@ DuckDB itself is not multi-writer-safe; if you ever run two CLI jobs at the
 same time they'll race on the primary file. For now the cron schedule is
 sparse enough (one ingestion per source per day) that we don't need a file
 lock — add :mod:`portalocker` here if that changes.
-
-This module is **placeholder-grade**: ``upsert_events`` and ``list_events``
-are signatures-only so the rest of the skeleton compiles. Wire up the real
-SQL in M1 alongside the first adapter.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from contextlib import contextmanager
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -28,9 +26,30 @@ import duckdb
 
 from ..config import Settings, get_settings
 from ..normalize import ExpectedEvent
+from ..normalize.event_type_map import EVENT_TYPE_VALUES
+from ..normalize.schemas import EVENT_SCOPE_VALUES
 from .ddl import apply_ddl
 
 LOGGER = logging.getLogger(__name__)
+
+# Columns we read out of expected_events. Listing them explicitly keeps
+# read paths stable even if the table grows new columns later.
+_SELECT_COLUMNS = (
+    "event_id, source, source_fingerprint, event_type, event_name, "
+    "event_scope, scope_reason, event_content, expected_at, expected_at_end, "
+    "time_certainty, importance, stock_codes, industries, themes, leaders, "
+    "source_url, payload, status, ingested_at"
+)
+
+# Whitelist for ``sort_by`` to keep the ORDER BY clause injection-safe. If
+# the API asks for an unlisted column we silently fall back to expected_at.
+_SORTABLE_COLUMNS = {
+    "expected_at",
+    "ingested_at",
+    "importance",
+    "event_type",
+    "event_scope",
+}
 
 
 @contextmanager
@@ -66,8 +85,8 @@ def open_replica(settings: Settings | None = None) -> Iterator[duckdb.DuckDBPyCo
     if not target.exists():
         # Bootstrap an empty primary so the API has something to open.
         target.parent.mkdir(parents=True, exist_ok=True)
-        with open_primary(settings) as bootstrap:
-            del bootstrap  # apply_ddl runs and the file is created
+        with open_primary(settings):
+            pass  # apply_ddl runs and the file is created
         target = settings.duckdb_path
     conn = duckdb.connect(str(target), read_only=True)
     try:
@@ -103,23 +122,225 @@ def publish_replica(settings: Settings | None = None) -> Path:
     return dst
 
 
-# --- placeholder write/read API --------------------------------------------
-#
-# Real implementations land alongside the first adapter. Keeping the
-# signatures stable now means the API and CLI layers don't need to change
-# again later.
+# --- write path ------------------------------------------------------------
+
+
+def _event_to_row(event: ExpectedEvent) -> tuple:
+    """Flatten an ExpectedEvent into the parameter tuple for INSERT.
+
+    Order MUST match the column list in ``upsert_events``'s SQL. Lists of
+    nested dataclasses get JSON-serialized — DuckDB has a JSON type, and
+    storing as JSON avoids needing a second table at this scale.
+    """
+    return (
+        event.event_id,
+        event.source,
+        event.source_fingerprint,
+        event.event_type,
+        event.event_name,
+        event.event_scope,
+        event.scope_reason,
+        event.event_content,
+        event.expected_at,
+        event.expected_at_end,
+        event.time_certainty,
+        int(event.importance),
+        json.dumps([s.to_dict() for s in event.stock_codes], ensure_ascii=False),
+        json.dumps(list(event.industries), ensure_ascii=False),
+        json.dumps(list(event.themes), ensure_ascii=False),
+        json.dumps([s.to_dict() for s in event.leaders], ensure_ascii=False),
+        event.source_url,
+        json.dumps(event.payload, ensure_ascii=False),
+        event.status,
+    )
 
 
 def upsert_events(
     conn: duckdb.DuckDBPyConnection,
     events: Iterable[ExpectedEvent],
 ) -> int:
-    """Upsert ExpectedEvent rows by (source, source_fingerprint).
+    """Upsert ExpectedEvent rows.
 
-    Returns the number of rows written. Placeholder for M1 — adapter PR
-    will fill this in with the actual ``INSERT ... ON CONFLICT`` SQL.
+    DuckDB doesn't have ``ON CONFLICT DO UPDATE`` semantics that mesh well
+    with our composite (source, source_fingerprint) unique key, so we go
+    with the simpler **delete-then-insert per fingerprint pair**: takes a
+    short transaction, idempotent, no race conditions because only the CLI
+    writes. ``ingested_at`` defaults to ``CURRENT_TIMESTAMP`` so re-pulled
+    rows get a fresh timestamp without us threading it through the row
+    tuple.
     """
-    raise NotImplementedError("upsert_events lands with the first adapter (M1)")
+    rows = [_event_to_row(event) for event in events]
+    if not rows:
+        return 0
+
+    pairs = [(event.source, event.source_fingerprint) for event in events]
+    conn.execute("BEGIN")
+    try:
+        conn.executemany(
+            "DELETE FROM expected_events WHERE source = ? AND source_fingerprint = ?",
+            pairs,
+        )
+        conn.executemany(
+            """
+            INSERT INTO expected_events (
+                event_id, source, source_fingerprint, event_type, event_name,
+                event_scope, scope_reason, event_content, expected_at, expected_at_end,
+                time_certainty, importance, stock_codes, industries, themes, leaders,
+                source_url, payload, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    return len(rows)
+
+
+# --- read path -------------------------------------------------------------
+
+
+def _parse_json_column(raw: Any) -> Any:
+    """Tolerant JSON deserializer for columns we wrote as ``json.dumps``.
+
+    DuckDB returns JSON columns as strings. We want lists/dicts back. Empty
+    strings / NULL / non-JSON content all collapse to a sensible default
+    (empty list) so downstream code never has to ``isinstance`` check.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, (list, dict)):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return []
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return []
+
+
+def _date_to_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
+def _row_to_dict(row: tuple) -> dict[str, Any]:
+    """Map a SELECT row back to the API-facing dict shape.
+
+    Keys here line up with what
+    :meth:`calenderapp.services.eventradar_proxy_service.EventradarProxyService._normalize_announcement`
+    expects, so nothing in the proxy layer needs to translate.
+    """
+    (
+        event_id, source, source_fingerprint, event_type, event_name,
+        event_scope, scope_reason, event_content, expected_at, expected_at_end,
+        time_certainty, importance, stock_codes, industries, themes, leaders,
+        source_url, payload, status, ingested_at,
+    ) = row
+
+    stocks = _parse_json_column(stock_codes)
+    leader_list = _parse_json_column(leaders)
+
+    return {
+        "event_id": event_id,
+        "source": source,
+        "source_fingerprint": source_fingerprint,
+        "event_type": event_type or "",
+        "event_name": event_name or "",
+        "event_scope": event_scope or "",
+        "scope_reason": scope_reason or "",
+        "event_content": event_content or "",
+        "expected_at": _date_to_str(expected_at),
+        "expected_at_end": _date_to_str(expected_at_end),
+        "time_certainty": time_certainty or "",
+        "importance": int(importance or 0),
+        # 双命名：``stock_codes`` 是 schema 原名，``affected_stocks`` 是
+        # calenderapp proxy 期望的字段名。两个都返回，前端无须再做翻译。
+        "stock_codes": stocks,
+        "affected_stocks": stocks,
+        "industries": _parse_json_column(industries),
+        "affected_industries": _parse_json_column(industries),
+        "themes": _parse_json_column(themes),
+        "affected_themes": _parse_json_column(themes),
+        "leaders": leader_list,
+        "source_url": source_url or "",
+        "source": source,
+        "status": status or "",
+    }
+
+
+def _build_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
+    """Translate the API filters dict into a SQL WHERE clause + params.
+
+    Every clause is column-bound + parameterized — no user string ever
+    enters the SQL text. Returns ("" or "WHERE ...", params).
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    date_from = (filters.get("date_from") or "").strip()
+    if date_from:
+        clauses.append("expected_at >= ?")
+        params.append(date_from)
+    date_to = (filters.get("date_to") or "").strip()
+    if date_to:
+        clauses.append("expected_at <= ?")
+        params.append(date_to)
+
+    scope = (filters.get("scope") or "").strip().lower()
+    if scope:
+        clauses.append("event_scope = ?")
+        params.append(scope)
+
+    event_type = (filters.get("event_type") or "").strip().lower()
+    if event_type:
+        clauses.append("event_type = ?")
+        params.append(event_type)
+
+    importance_min = filters.get("importance_min")
+    if importance_min not in (None, "", 0):
+        try:
+            clauses.append("importance >= ?")
+            params.append(int(importance_min))
+        except (TypeError, ValueError):
+            pass  # silently drop a bogus value rather than 500ing
+
+    keyword = (filters.get("keyword") or "").strip()
+    if keyword:
+        # OR across the human-readable columns. ``ILIKE`` is DuckDB's
+        # case-insensitive match.
+        clauses.append("(event_name ILIKE ? OR event_content ILIKE ?)")
+        params.extend([f"%{keyword}%"] * 2)
+
+    industry = (filters.get("industry") or "").strip()
+    if industry:
+        # JSON column LIKE — wrap in quotes so we match the JSON-serialized
+        # string element (``"半导体"``) rather than substrings.
+        clauses.append("CAST(industries AS VARCHAR) LIKE ?")
+        params.append(f'%"{industry}"%')
+
+    theme = (filters.get("theme") or "").strip()
+    if theme:
+        clauses.append("CAST(themes AS VARCHAR) LIKE ?")
+        params.append(f'%"{theme}"%')
+
+    stock_code = (filters.get("stock_code") or "").strip().upper()
+    if stock_code:
+        clauses.append('CAST(stock_codes AS VARCHAR) LIKE ?')
+        params.append(f'%"{stock_code}"%')
+
+    if not clauses:
+        return "", params
+    return "WHERE " + " AND ".join(clauses), params
 
 
 def list_events(
@@ -131,19 +352,123 @@ def list_events(
     sort_order: str,
     filters: dict[str, Any],
 ) -> dict[str, Any]:
-    """Paginated read for ``POST /events/expected``.
+    """Paginated read for ``POST /events/expected``."""
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+    sort_column = sort_by if sort_by in _SORTABLE_COLUMNS else "expected_at"
+    sort_dir = "DESC" if str(sort_order).lower() == "desc" else "ASC"
+    where_clause, params = _build_filters(filters)
 
-    Returns the same shape ``EventradarProxyService._normalize_announcement``
-    expects: ``{items, count, total_count, page, page_size, sort_by, sort_order, has_more}``.
-    """
-    raise NotImplementedError("list_events lands with the API wiring (M1)")
+    total_count = conn.execute(
+        f"SELECT COUNT(*) FROM expected_events {where_clause}",
+        params,
+    ).fetchone()[0]
+
+    offset = (page - 1) * page_size
+    rows = conn.execute(
+        # Secondary sort on event_id keeps pagination stable when the
+        # primary sort column has ties (e.g. many rows on the same date).
+        f"""
+        SELECT {_SELECT_COLUMNS}
+        FROM expected_events
+        {where_clause}
+        ORDER BY {sort_column} {sort_dir} NULLS LAST, event_id ASC
+        LIMIT ? OFFSET ?
+        """,
+        params + [page_size, offset],
+    ).fetchall()
+
+    items = [_row_to_dict(row) for row in rows]
+    return {
+        "items": items,
+        "count": len(items),
+        "total_count": int(total_count or 0),
+        "page": page,
+        "page_size": page_size,
+        "sort_by": sort_column,
+        "sort_order": sort_dir.lower(),
+        "has_more": offset + len(items) < int(total_count or 0),
+    }
 
 
 def get_event(conn: duckdb.DuckDBPyConnection, event_id: str) -> dict[str, Any] | None:
     """Single-row fetch for ``GET /events/expected/{event_id}``."""
-    raise NotImplementedError("get_event lands with the API wiring (M1)")
+    event_id = (event_id or "").strip()
+    if not event_id:
+        return None
+    row = conn.execute(
+        f"SELECT {_SELECT_COLUMNS} FROM expected_events WHERE event_id = ?",
+        [event_id],
+    ).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 def filter_meta(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
-    """Distinct facet values for ``GET /events/expected/filters/meta``."""
-    raise NotImplementedError("filter_meta lands with the API wiring (M1)")
+    """Distinct facet values for ``GET /events/expected/filters/meta``.
+
+    ``industries`` / ``themes`` come from JSON columns — DuckDB's
+    ``json_each`` flattens them into rows we can DISTINCT over. When the DB
+    is empty (fresh install / first boot before any pull) every list comes
+    back empty rather than the call erroring.
+    """
+    # event_types & scopes seen in the data (might be subset of the static
+    # enum tuples — return the union so the UI can pre-populate dropdowns).
+    seen_event_types = {
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT event_type FROM expected_events WHERE event_type IS NOT NULL"
+        ).fetchall()
+        if row[0]
+    }
+    seen_scopes = {
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT event_scope FROM expected_events WHERE event_scope IS NOT NULL"
+        ).fetchall()
+        if row[0]
+    }
+
+    # JSON list columns — flatten with json_each.
+    industries = sorted(
+        {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT json_each.value
+                FROM expected_events,
+                     json_each(industries)
+                """
+            ).fetchall()
+            if row[0]
+        }
+    )
+    themes = sorted(
+        {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT json_each.value
+                FROM expected_events,
+                     json_each(themes)
+                """
+            ).fetchall()
+            if row[0]
+        }
+    )
+
+    # Date bounds let the UI initialize its date-range picker sensibly.
+    bounds = conn.execute(
+        "SELECT MIN(expected_at), MAX(expected_at) FROM expected_events"
+    ).fetchone()
+    date_min = _date_to_str(bounds[0]) if bounds and bounds[0] else ""
+    date_max = _date_to_str(bounds[1]) if bounds and bounds[1] else ""
+
+    return {
+        "industries": industries,
+        "themes": themes,
+        # 静态枚举（提供完整 UI 选项）∪ 数据中已出现的（保险，防止未来扩枚举忘改这边）
+        "event_types": sorted(set(EVENT_TYPE_VALUES) | seen_event_types),
+        "scopes": sorted(set(EVENT_SCOPE_VALUES) | seen_scopes),
+        "date_min": date_min,
+        "date_max": date_max,
+    }
