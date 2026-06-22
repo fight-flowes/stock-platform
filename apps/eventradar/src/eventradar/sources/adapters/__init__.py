@@ -19,5 +19,7 @@ Importing this package side-effect-registers every adapter into
 # Importing the module is what registers the adapter into the global
 # ADAPTERS table — see the bottom of each adapter file.
 from . import company_calendar_em  # noqa: F401
+from . import earnings_forecast_em  # noqa: F401
+from . import macro_calendar_ws  # noqa: F401
 
-__all__ = ["company_calendar_em"]
+__all__ = ["company_calendar_em", "earnings_forecast_em", "macro_calendar_ws"]

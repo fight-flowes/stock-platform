@@ -92,15 +92,26 @@ def create_app() -> FastAPI:
             filters=payload.filters,
         )
 
+    # Static sub-routes MUST be declared before the catch-all
+    # ``/{event_id}`` — FastAPI matches in declaration order, so without
+    # this ordering a GET /events/expected/source-counts would be routed
+    # to get_announcement(event_id="source-counts") and 404.
+    @app.get("/events/expected/filters/meta")
+    def get_filter_meta() -> dict[str, Any]:
+        return service.get_filter_meta()
+
+    @app.get("/events/expected/source-counts")
+    def get_source_counts() -> dict[str, Any]:
+        # Returned under a ``counts`` key (rather than spreading at the top
+        # level) so the response shape can grow later without breaking
+        # clients — e.g. add ``last_success_at`` per source in M4.
+        return {"counts": service.get_source_counts()}
+
     @app.get("/events/expected/{event_id}")
     def get_announcement(event_id: str) -> dict[str, Any]:
         event = service.get_announcement(event_id)
         if not event:
             raise HTTPException(status_code=404, detail=f"event not found: {event_id}")
         return {"found": True, "event_id": event_id, "event": event}
-
-    @app.get("/events/expected/filters/meta")
-    def get_filter_meta() -> dict[str, Any]:
-        return service.get_filter_meta()
 
     return app

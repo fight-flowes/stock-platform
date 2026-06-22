@@ -54,6 +54,26 @@ DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_ee_event_type  ON expected_events(event_type)",
     "CREATE INDEX IF NOT EXISTS idx_ee_event_scope ON expected_events(event_scope)",
     "CREATE INDEX IF NOT EXISTS idx_ee_status      ON expected_events(status)",
+    # M3: track which rows have been enriched so the enrich pass is idempotent
+    # (only re-processes rows where enriched_at IS NULL, or all with --all).
+    # ADD COLUMN IF NOT EXISTS makes this a no-op on DBs that already have it.
+    "ALTER TABLE expected_events ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMP",
+    # M3: per-stock metadata cache (industry + market cap). Populated by
+    # `eventradar refresh-stock-meta` from akshare stock_individual_info_em.
+    # Read-only during enrich; one row per stock_code, refreshed on demand.
+    # Decouples enrichment from live akshare calls — a flaky push2 endpoint
+    # can't block the enrich pass once the cache is warm.
+    """
+    CREATE TABLE IF NOT EXISTS stock_meta (
+        stock_code          VARCHAR PRIMARY KEY,
+        stock_name          VARCHAR,
+        industry            VARCHAR,
+        total_market_cap    DOUBLE,
+        float_market_cap    DOUBLE,
+        updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_stock_meta_industry ON stock_meta(industry)",
 )
 
 

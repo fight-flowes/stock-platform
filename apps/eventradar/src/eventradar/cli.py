@@ -105,6 +105,36 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("publish-replica", help="copy primary duckdb onto the read replica")
 
+    refresh_meta = sub.add_parser(
+        "refresh-stock-meta",
+        help="populate the stock_meta cache (industry + market cap) from akshare",
+    )
+    refresh_meta.add_argument(
+        "--codes",
+        default="",
+        help="comma-separated stock codes to fetch (default: all codes with events but no cached meta)",
+    )
+
+    refresh_meta_tushare = sub.add_parser(
+        "refresh-stock-meta-tushare",
+        help="bulk-populate stock_meta via calenderapp's tushare proxy (A股 ~5500 stocks in ~2 calls)",
+    )
+    refresh_meta_tushare.add_argument(
+        "--trade-date",
+        default="",
+        help="YYYYMMDD for daily_basic (default: walk back from today until a trade day with data)",
+    )
+
+    enrich = sub.add_parser(
+        "enrich",
+        help="fill industries / leaders / importance / expected_at_end for expected events",
+    )
+    enrich.add_argument(
+        "--all",
+        action="store_true",
+        help="re-enrich every row (default: only rows where enriched_at IS NULL)",
+    )
+
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
 
@@ -118,6 +148,13 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_pull(args.adapter, dict(args.kv))
     if args.command == "publish-replica":
         return _cmd_publish_replica()
+    if args.command == "refresh-stock-meta":
+        codes = [c for c in (args.codes.split(",") if args.codes else []) if c.strip()]
+        return _cmd_refresh_stock_meta(codes or None)
+    if args.command == "refresh-stock-meta-tushare":
+        return _cmd_refresh_stock_meta_tushare(args.trade_date.strip() or None)
+    if args.command == "enrich":
+        return _cmd_enrich(all_rows=args.all)
 
     parser.error(f"unknown command: {args.command}")
     return 2
@@ -191,6 +228,29 @@ def _cmd_publish_replica() -> int:
 
     target = publish_replica()
     print(f"replica published: {target}")
+    return 0
+
+
+def _cmd_refresh_stock_meta(codes: list[str] | None) -> int:
+    service = EventradarService()
+    summary = service.refresh_stock_meta(codes)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_refresh_stock_meta_tushare(trade_date: str | None) -> int:
+    service = EventradarService()
+    summary = service.refresh_stock_meta_via_tushare(trade_date=trade_date)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    # A non-zero exit when the tushare path is unavailable makes CI / cron
+    # fail visibly rather than silently skipping the refresh.
+    return 0 if summary.get("status") == "ok" else 2
+
+
+def _cmd_enrich(*, all_rows: bool) -> int:
+    service = EventradarService()
+    summary = service.enrich_events(all_rows=all_rows)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 

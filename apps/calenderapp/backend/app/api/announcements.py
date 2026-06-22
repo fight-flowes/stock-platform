@@ -48,6 +48,25 @@ def _proxy_error_response(exc: EventradarProxyError):
     )
 
 
+def _parse_tri_bool(value):
+    """Coerce request JSON into True / False / None.
+
+    Accepts JSON booleans (the common case from the frontend), plus the
+    string forms ``"true"``/``"false"`` so an old query-string client can
+    still send them. Anything else — including the omitted key — collapses
+    to None, which the downstream layer treats as "no filter".
+    """
+    if value is True or value is False:
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes"}:
+            return True
+        if text in {"false", "0", "no"}:
+            return False
+    return None
+
+
 def _validation_error_response(exc: ValueError):
     return (
         APIResponse.error(
@@ -109,11 +128,20 @@ class AnnouncementsList(Resource):
                 "date_to": parse_date(raw_filters.get("date_to"), required=False) or "",
                 "scope": str(raw_filters.get("scope") or "").strip().lower(),
                 "event_type": str(raw_filters.get("event_type") or "").strip().lower(),
+                # Adapter-level source identifier — single value
+                # ("em_yjyg") or comma-separated for unioning a platform's
+                # multiple sources ("em_gsrl,em_yjyg" for all of 东方财富).
+                "source": str(raw_filters.get("source") or "").strip(),
                 "keyword": str(raw_filters.get("keyword") or "").strip(),
                 "industry": str(raw_filters.get("industry") or "").strip(),
                 "theme": str(raw_filters.get("theme") or "").strip(),
                 "stock_code": str(raw_filters.get("stock_code") or "").strip().upper(),
                 "importance_min": raw_filters.get("importance_min"),
+                # has_leader is a tri-state: True / False / None (unset).
+                # We pass JSON booleans straight through; anything else (a
+                # missing key or a stray string) becomes None and the
+                # eventradar layer treats it as "no filter".
+                "has_leader": _parse_tri_bool(raw_filters.get("has_leader")),
             }
 
             data = EventradarProxyService.list_announcements(
@@ -163,5 +191,20 @@ class AnnouncementFilterMeta(Resource):
     def get(self):
         try:
             return APIResponse.success(EventradarProxyService.get_filter_meta())
+        except EventradarProxyError as exc:
+            return _proxy_error_response(exc)
+
+
+@announcements_ns.route("/source-counts")
+class AnnouncementSourceCounts(Resource):
+    """Per-source event counts — feeds the platform/source tabs.
+
+    Response shape: ``{"counts": {"em_yjyg": 7800, "em_gsrl": 701, ...}}``.
+    Empty ``counts`` dict in placeholder mode (eventradar unconfigured).
+    """
+
+    def get(self):
+        try:
+            return APIResponse.success(EventradarProxyService.get_source_counts())
         except EventradarProxyError as exc:
             return _proxy_error_response(exc)

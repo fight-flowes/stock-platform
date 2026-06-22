@@ -159,44 +159,67 @@ def upsert_events(
     conn: duckdb.DuckDBPyConnection,
     events: Iterable[ExpectedEvent],
 ) -> int:
-    """Upsert ExpectedEvent rows.
+    """Upsert ExpectedEvent rows by ``(source, source_fingerprint)``.
 
-    DuckDB doesn't have ``ON CONFLICT DO UPDATE`` semantics that mesh well
-    with our composite (source, source_fingerprint) unique key, so we go
-    with the simpler **delete-then-insert per fingerprint pair**: takes a
-    short transaction, idempotent, no race conditions because only the CLI
-    writes. ``ingested_at`` defaults to ``CURRENT_TIMESTAMP`` so re-pulled
-    rows get a fresh timestamp without us threading it through the row
-    tuple.
+    Two layers of safety:
+
+    1. **Batch dedupe** — same (source, fp) appearing twice in one batch
+       collapses to the last occurrence. This happens when adapters pull
+       overlapping date windows and the upstream surfaces the same
+       multi-day event in several days' responses.
+
+    2. **ON CONFLICT DO UPDATE** — DuckDB-native upsert keyed by the
+       unique index on (source, source_fingerprint). Avoids the
+       DELETE-then-INSERT-in-one-transaction pattern, which DuckDB's
+       constraint checker doesn't always see through (the DELETE's
+       intra-transaction effect on the unique index isn't always visible
+       to the immediately-following INSERT).
+
+    ``ingested_at`` is set on each row from `CURRENT_TIMESTAMP` via
+    `excluded.ingested_at` so re-pulling refreshes the timestamp.
     """
-    rows = [_event_to_row(event) for event in events]
-    if not rows:
+    events = list(events)
+    if not events:
         return 0
 
-    pairs = [(event.source, event.source_fingerprint) for event in events]
-    conn.execute("BEGIN")
-    try:
-        conn.executemany(
-            "DELETE FROM expected_events WHERE source = ? AND source_fingerprint = ?",
-            pairs,
-        )
-        conn.executemany(
-            """
-            INSERT INTO expected_events (
-                event_id, source, source_fingerprint, event_type, event_name,
-                event_scope, scope_reason, event_content, expected_at, expected_at_end,
-                time_certainty, importance, stock_codes, industries, themes, leaders,
-                source_url, payload, status
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
+    # Last-write-wins batch dedupe — see docstring.
+    by_key: dict[tuple[str, str], ExpectedEvent] = {}
+    for event in events:
+        by_key[(event.source, event.source_fingerprint)] = event
+    deduped = list(by_key.values())
+    rows = [_event_to_row(event) for event in deduped]
 
+    conn.executemany(
+        """
+        INSERT INTO expected_events (
+            event_id, source, source_fingerprint, event_type, event_name,
+            event_scope, scope_reason, event_content, expected_at, expected_at_end,
+            time_certainty, importance, stock_codes, industries, themes, leaders,
+            source_url, payload, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (source, source_fingerprint) DO UPDATE SET
+            event_id        = excluded.event_id,
+            event_type      = excluded.event_type,
+            event_name      = excluded.event_name,
+            event_scope     = excluded.event_scope,
+            scope_reason    = excluded.scope_reason,
+            event_content   = excluded.event_content,
+            expected_at     = excluded.expected_at,
+            expected_at_end = excluded.expected_at_end,
+            time_certainty  = excluded.time_certainty,
+            importance      = excluded.importance,
+            stock_codes     = excluded.stock_codes,
+            industries      = excluded.industries,
+            themes          = excluded.themes,
+            leaders         = excluded.leaders,
+            source_url      = excluded.source_url,
+            payload         = excluded.payload,
+            status          = excluded.status,
+            ingested_at     = now()
+        """,
+        rows,
+    )
     return len(rows)
 
 
@@ -301,6 +324,19 @@ def _build_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
         clauses.append("event_scope = ?")
         params.append(scope)
 
+    # `source` is the adapter-level identifier ("em_gsrl" / "em_yjyg" /
+    # "wallstreet_macro"). Drives the platform/source two-tier tabs on the
+    # frontend. Accepts a single value or a comma-separated list (so the
+    # "东方财富" platform tab can pass `em_gsrl,em_yjyg` to union the two
+    # sources without two round-trips).
+    source = (filters.get("source") or "").strip()
+    if source:
+        items = [s.strip() for s in source.split(",") if s.strip()]
+        if items:
+            placeholders = ",".join("?" * len(items))
+            clauses.append(f"source IN ({placeholders})")
+            params.extend(items)
+
     event_type = (filters.get("event_type") or "").strip().lower()
     if event_type:
         clauses.append("event_type = ?")
@@ -313,6 +349,16 @@ def _build_filters(filters: dict[str, Any]) -> tuple[str, list[Any]]:
             params.append(int(importance_min))
         except (TypeError, ValueError):
             pass  # silently drop a bogus value rather than 500ing
+
+    # has_leader: true → only events that touched a leader stock (leaders
+    # JSON array non-empty). The enricher writes "[]" for the no-leader case
+    # rather than NULL, so we test inequality with a JSON string literal.
+    # false explicitly excludes leader events; None / unset = no filter.
+    has_leader = filters.get("has_leader")
+    if has_leader is True:
+        clauses.append("leaders IS NOT NULL AND leaders != '[]'")
+    elif has_leader is False:
+        clauses.append("(leaders IS NULL OR leaders = '[]')")
 
     keyword = (filters.get("keyword") or "").strip()
     if keyword:
@@ -428,13 +474,16 @@ def filter_meta(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
         if row[0]
     }
 
-    # JSON list columns — flatten with json_each.
+    # JSON list columns — flatten with json_each. Use json_each.value->>'$'
+    # to get the scalar string; bare json_each.value returns the JSON-encoded
+    # token (i.e. '"化学制品"' with quotes) for string elements, which would
+    # leak quote characters into the filter dropdown values.
     industries = sorted(
         {
             row[0]
             for row in conn.execute(
                 """
-                SELECT DISTINCT json_each.value
+                SELECT DISTINCT json_each.value->>'$'
                 FROM expected_events,
                      json_each(industries)
                 """
@@ -447,7 +496,7 @@ def filter_meta(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
             row[0]
             for row in conn.execute(
                 """
-                SELECT DISTINCT json_each.value
+                SELECT DISTINCT json_each.value->>'$'
                 FROM expected_events,
                      json_each(themes)
                 """
@@ -472,3 +521,177 @@ def filter_meta(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
         "date_min": date_min,
         "date_max": date_max,
     }
+
+
+def source_counts(conn: duckdb.DuckDBPyConnection) -> dict[str, int]:
+    """Event count per ``source`` — drives the platform/source tabs.
+
+    Returns ``{source_id: count}`` for every source that has rows. Sources
+    with zero rows aren't returned; the frontend layers them in as
+    placeholders from its own static platform registry. Done as a single
+    GROUP BY to avoid N queries from the UI.
+    """
+    return {
+        str(row[0]): int(row[1])
+        for row in conn.execute(
+            "SELECT source, COUNT(*) FROM expected_events "
+            "WHERE source IS NOT NULL GROUP BY 1"
+        ).fetchall()
+        if row[0]
+    }
+
+
+# --- enrichment path (M3) --------------------------------------------------
+#
+# These are partial updates by event_id — unlike upsert_events (which
+# delete-then-inserts whole rows), the enrich pass only rewrites the four
+# enrichment columns + enriched_at, leaving ingested_at / payload / the
+# adapter-supplied fields untouched. That keeps the adapter and enricher
+# cleanly separable: re-running enrich never loses the original ingest.
+
+
+# Columns the enrich pass is allowed to rewrite. Kept in one place so the
+# UPDATE statement and the row tuple stay in lock-step.
+_ENRICH_COLUMNS = (
+    "industries",
+    "leaders",
+    "importance",
+    "expected_at_end",
+    "time_certainty",
+    "enriched_at",
+)
+
+
+def update_enrichment(
+    conn: duckdb.DuckDBPyConnection,
+    rows: Iterable[tuple],
+) -> int:
+    """Batch-update enrichment columns by ``event_id``.
+
+    Each row is ``(event_id, industries_json, leaders_json, importance,
+    expected_at_end, time_certainty, enriched_at)`` — order matches
+    :data:`_ENRICH_COLUMNS` plus the key. industries/leaders are already
+    JSON strings (caller serializes) so DuckDB stores them verbatim into the
+    JSON columns. Single transaction; 0 rows → no-op.
+    """
+    rows = list(rows)
+    if not rows:
+        return 0
+    conn.execute("BEGIN")
+    try:
+        conn.executemany(
+            """
+            UPDATE expected_events
+            SET industries = ?,
+                leaders = ?,
+                importance = ?,
+                expected_at_end = ?,
+                time_certainty = ?,
+                enriched_at = ?
+            WHERE event_id = ?
+            """,
+            # SQL binds columns first, then the WHERE key — reorder the
+            # tuple so the key comes last.
+            [(r[1], r[2], r[3], r[4], r[5], r[6], r[0]) for r in rows],
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return len(rows)
+
+
+def upsert_stock_meta(
+    conn: duckdb.DuckDBPyConnection,
+    rows: Iterable[tuple],
+) -> int:
+    """Insert-or-replace ``stock_meta`` rows.
+
+    Each row: ``(stock_code, stock_name, industry, total_market_cap,
+    float_market_cap, updated_at)``. ``updated_at`` may be None — DuckDB's
+    column default (CURRENT_TIMESTAMP) only fires on INSERT without a value,
+    and INSERT OR REPLACE supplies all columns, so pass an explicit
+    timestamp from the caller when you want freshness tracking.
+    """
+    rows = list(rows)
+    if not rows:
+        return 0
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO stock_meta
+            (stock_code, stock_name, industry, total_market_cap,
+             float_market_cap, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    return len(rows)
+
+
+def get_stock_meta_map(
+    conn: duckdb.DuckDBPyConnection,
+    stock_codes: Iterable[str],
+) -> dict[str, dict[str, Any]]:
+    """Bulk-fetch ``stock_meta`` for the given codes → ``{code: {field: val}}``.
+
+    Unknown codes are simply absent from the result — callers handle the miss
+    (graceful degradation, not an error). Market-cap values come back as
+    floats so leader_scorer can compare against the threshold directly.
+    """
+    codes = [str(c).strip() for c in stock_codes if str(c).strip()]
+    if not codes:
+        return {}
+    # IN-list with placeholders — DuckDB handles the binding.
+    placeholders = ",".join("?" * len(codes))
+    rows = conn.execute(
+        f"""
+        SELECT stock_code, stock_name, industry, total_market_cap,
+               float_market_cap
+        FROM stock_meta
+        WHERE stock_code IN ({placeholders})
+        """,
+        codes,
+    ).fetchall()
+    return {
+        str(row[0]): {
+            "stock_code": str(row[0]),
+            "stock_name": str(row[1] or ""),
+            "industry": str(row[2] or ""),
+            "total_market_cap": float(row[3]) if row[3] is not None else None,
+            "float_market_cap": float(row[4]) if row[4] is not None else None,
+        }
+        for row in rows
+    }
+
+
+def list_stock_codes_needing_meta(
+    conn: duckdb.DuckDBPyConnection,
+) -> list[str]:
+    """Stock codes referenced by expected_events but absent from stock_meta.
+
+    Drives ``refresh_stock_meta`` so we only fetch metadata for stocks we
+    actually have events for, and only the ones not yet cached. Returns
+    distinct codes, stripped, sorted for deterministic fetch order.
+
+    Flattens *every* code in each event's ``stock_codes`` JSON array (not
+    just the first) so multi-stock events from future M2 sources are fully
+    covered.
+    """
+    rows = conn.execute(
+        """
+        SELECT DISTINCT je.value->>'$.stock_code' AS code
+        FROM expected_events,
+             json_each(stock_codes) AS je
+        WHERE je.value->>'$.stock_code' IS NOT NULL
+          AND (je.value->>'$.stock_code') NOT IN
+              (SELECT stock_code FROM stock_meta)
+        """
+    ).fetchall()
+    codes: list[str] = []
+    for (raw,) in rows:
+        if raw is None:
+            continue
+        text = str(raw).strip().strip('"')
+        if text:
+            codes.append(text)
+    return sorted(set(codes))

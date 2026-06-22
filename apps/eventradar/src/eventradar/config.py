@@ -70,6 +70,33 @@ class Settings:
     # Future toggles — kept here so adapters never reach for os.environ.
     raw_cache_enabled: bool = _env_bool("EVENTRADAR_RAW_CACHE_ENABLED", True)
 
+    # Enrichment (M3). A stock whose float market cap (流通市值, in CNY) is at
+    # or above this threshold is tagged as a 龙头/leader. Default 500 亿 — high
+    # enough that only large-caps qualify, low enough to catch sector leaders.
+    # Override via env for tuning without a code change.
+    leader_float_mv_threshold: float = float(
+        os.getenv("EVENTRADAR_LEADER_FLOAT_MV", str(500 * 10**8))
+    )
+
+    # A1 — tushare integration for stock_meta. eventradar doesn't ship its
+    # own tushare token; it reuses calenderapp's config (which already has
+    # a working internal-proxy token via TUSHARE_API_URL). The path below
+    # is added to sys.path on demand so `from app.config import
+    # get_tushare_pro` resolves to calenderapp's module. Empty value =
+    # the tushare refresher is unavailable (refresh-stock-meta-tushare
+    # exits with a clear error). Default points at the sibling app under
+    # the same monorepo layout — adjust if calenderapp moves.
+    calenderapp_backend_path: str = os.getenv(
+        "EVENTRADAR_CALENDERAPP_BACKEND_PATH",
+        str((ROOT_DIR.parent / "calenderapp" / "backend").resolve()),
+    )
+    # Path to calenderapp's .env so we pick up its TUSHARE_TOKEN /
+    # TUSHARE_API_URL without copying secrets around. Skipped if missing.
+    calenderapp_env_path: str = os.getenv(
+        "EVENTRADAR_CALENDERAPP_ENV_PATH",
+        str((ROOT_DIR.parent / "calenderapp" / "backend" / ".env").resolve()),
+    )
+
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.raw_cache_dir.mkdir(parents=True, exist_ok=True)

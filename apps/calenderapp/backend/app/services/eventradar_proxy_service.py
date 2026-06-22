@@ -155,6 +155,27 @@ class EventradarProxyService:
             "date_max": str(payload.get("date_max") or ""),
         }
 
+    @classmethod
+    def get_source_counts(cls) -> Dict[str, Any]:
+        """Per-source event counts. Feeds the platform/source tabs.
+
+        Empty in placeholder mode — the frontend layers a static platform
+        registry on top, so the result is "every planned platform with
+        either a real count or 0".
+        """
+        if not cls.is_configured():
+            return {"counts": {}, "placeholder": True}
+        payload = cls._request_json("GET", "/events/expected/source-counts")
+        raw = payload.get("counts") if isinstance(payload, dict) else None
+        counts: Dict[str, int] = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                try:
+                    counts[str(key)] = int(value)
+                except (TypeError, ValueError):
+                    continue
+        return {"counts": counts}
+
     # ---------- internals ----------
 
     @staticmethod

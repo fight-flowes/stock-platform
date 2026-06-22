@@ -169,21 +169,82 @@ existing components — see `normalize/schemas.py` for the canonical list.
 | CLI                   | ✅ all subcommands wired                       |
 | Adapters              | ✅ `company_calendar_em` (live)                |
 | Storage upsert/list   | ✅ implemented (delete-then-insert upsert)     |
-| Industry/leader enricher | ❌ M3                                      |
+| Enrichment (M3)       | ✅ industries / leaders / importance / future-date |
+
+## M3 — enrichment layer
+
+Enrichment is a **separate stage** from ingestion, so adapters stay pure
+(they still emit `industries=[]`, `importance=1`) and the enricher fills
+the four enrichment dimensions afterward. The pipeline is:
+
+```
+pull company_calendar_em  →  refresh-stock-meta  →  enrich
+(akshare 拉数)              (补 stock_meta 缓存)    (回填 4 维 + 发布副本)
+```
+
+Each stage is independently re-runnable and idempotent.
+
+### Running it
+
+```bash
+# 1. Pull (already done in M1; only needed when refreshing the window)
+make pull ADAPTER=company_calendar_em ARGS="date=20260613 days=7"
+
+# 2. Warm the stock_meta cache (industry + 流通市值 per stock).
+#    Uses akshare stock_individual_info_em (push2 endpoint — needs network).
+#    Per-stock failures are skipped, not fatal.
+eventradar refresh-stock-meta
+# or force-refresh specific codes:
+eventradar refresh-stock-meta --codes 600519,000002
+
+# 3. Enrich — fills industries / leaders / importance / expected_at_end.
+eventradar enrich          # only rows where enriched_at IS NULL
+eventradar enrich --all    # re-enrich everything (after a meta refresh)
+```
+
+### What each enricher does
+
+* **`future_date_parser`** — regex-scans `event_content` for Chinese/ISO
+  dates, picks the earliest one *later than the disclosure date*, stores it
+  as `expected_at_end`. For gsdt's guarantee/pledge rows this surfaces the
+  担保/质押 **到期日** — the only forward-looking signal that feed has.
+  (Honest caveat: these are expiry endpoints, not catalytic event
+  schedules. M2's 业绩预告/解禁日历 will produce genuinely catalytic dates
+  through the same parser.)
+* **`industry_mapper`** — looks up each event's stock codes in `stock_meta`
+  → fills `industries`. Enables "filter events by industry".
+* **`leader_scorer`** — marks `leaders` = stocks with 流通市值 ≥ threshold
+  (default 500 亿, env `EVENTRADAR_LEADER_FLOAT_MV`). Source-agnostic; we
+  deliberately don't couple to calenderapp's 涨停龙虎 here.
+* **`importance_rules`** — score 0–3: base 1, +1 high-impact type
+  (restructuring/unlock/earnings_forecast/secondary_offering), +1 touches a
+  leader, +1 `expected_at_end` within 30 days.
+
+### Degradation
+
+If `stock_meta` is cold (push2 unreachable, cache empty), `enrich` still
+completes: `industries`/`leaders` stay empty and `importance` falls back to
+type + future-date only. Rows still get `enriched_at` set so they aren't
+retried pointlessly. Re-run `refresh-stock-meta` + `enrich --all` once the
+cache is warm.
+
+### Honest note on the current gsdt data
+
+The 701 gsdt rows are dominated by guarantee/restructuring/pledge
+disclosures — a **backward-looking** stream. M3 enrichment on them delivers
+modest visible value (industry filtering, large-cap flagging, expiry dates).
+The enrichment *machinery* is the real deliverable: M2's forward-looking
+sources (业绩预告 / 宏观日历 / 解禁日历) flow through the same enrichers and
+will produce genuinely "expected / industry-impacting / leader-impacting"
+events.
 
 ## Next steps
 
-`company_calendar_em` is end-to-end live: `make pull` populates DuckDB,
-`make serve` exposes the four endpoints, and calenderapp's
-`/api/announcements/*` proxy returns real rows. Outstanding work:
+`company_calendar_em` + M3 enrichment are live. Outstanding work:
 
-* **M2** — more adapters: 业绩预告 (`stock_yjyg_em`), 预约披露
-  (`stock_yysj_em`), 百度交易提醒 (`news_trade_notify_*_baidu`), 宏观日历
-  (`news_economic_baidu` / `macro_info_ws`). Each is one file under
-  `sources/adapters/`.
-* **M3** — `enrichers/`: map stock codes → industries/themes via
-  `stock_board_*_cons_em`, score leaders, assign `importance` 0–3, and parse
-  future dates out of `event_content` text so `expected_at` can point
-  forward even on a trailing pull.
+* **M2** — more adapters (the high-value forward-looking sources): 业绩预告
+  (`stock_yjyg_em`), 预约披露 (`stock_yysj_em`), 百度交易提醒
+  (`news_trade_notify_*_baidu`), 宏观日历 (`news_economic_baidu` /
+  `macro_info_ws`). Each flows through the M3 enrichers automatically.
 * **M4** — cron scheduling + a `source_health` table surfaced through
   `/health` so the calenderapp badge can flag stale data.
