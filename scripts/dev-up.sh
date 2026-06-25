@@ -6,11 +6,14 @@ PLATFORM_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APPS_DIR="${PLATFORM_ROOT}/apps"
 CALENDERAPP_DIR="${APPS_DIR}/calenderapp"
 STOCKKB_DIR="${APPS_DIR}/stockkb"
+EVENTRADAR_DIR="${APPS_DIR}/eventradar"
 
 API_PORT="${API_PORT:-8040}"
+EVENTRADAR_PORT="${EVENTRADAR_PORT:-8050}"
 STOCKKB_LOG_DIR="${STOCKKB_DIR}/logs"
 STOCKKB_RUN_DIR="${STOCKKB_DIR}/.run"
 STOCKKB_API_BASE_URL="${STOCKKB_API_BASE_URL:-http://127.0.0.1:${API_PORT}}"
+EVENTRADAR_API_BASE_URL="${EVENTRADAR_API_BASE_URL:-http://127.0.0.1:${EVENTRADAR_PORT}}"
 
 port_open() {
   local port="$1"
@@ -74,6 +77,15 @@ fi
 echo "[INFO] 启动 stockkb 核心链路（仅 API）"
 start_stockkb_api
 
+# eventradar 是 calenderapp 公告页的数据源，必须在 calenderapp 之前启动，
+# 这样 calenderapp 后端启动时的 /api/announcements/health 探测就能拿到 healthy。
+if [[ -d "${EVENTRADAR_DIR}" ]]; then
+  echo "[INFO] 启动 eventradar"
+  EVENTRADAR_MANAGE_COMPACT=1 bash "${EVENTRADAR_DIR}/manage.sh" start
+else
+  echo "[WARN] apps/eventradar 不存在，公告页将无数据"
+fi
+
 echo "[INFO] 启动 calenderapp"
 STOCKKB_API_BASE_URL="${STOCKKB_API_BASE_URL}" \
 CALENDERAPP_MANAGE_COMPACT=1 \
@@ -81,6 +93,7 @@ bash "${CALENDERAPP_DIR}/manage.sh" start
 
 echo ""
 echo "[OK] stock-platform 启动完成"
-echo "[INFO] 前端:   http://127.0.0.1:3000"
-echo "[INFO] 后端:   http://127.0.0.1:5000"
-echo "[INFO] stockkb: http://127.0.0.1:${API_PORT}"
+echo "[INFO] 前端:      http://127.0.0.1:3000"
+echo "[INFO] 后端:      http://127.0.0.1:5000"
+echo "[INFO] stockkb:   http://127.0.0.1:${API_PORT}"
+echo "[INFO] eventradar: http://127.0.0.1:${EVENTRADAR_PORT}"

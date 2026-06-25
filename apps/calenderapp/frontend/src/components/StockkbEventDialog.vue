@@ -535,6 +535,7 @@ function applyFavoriteState(eventId, value) {
 .summary-risk-chip .summary-value {
   font-size: 14px;
   line-height: 1.6;
+  white-space: pre-line;
 }
 
 .summary-risk-text {

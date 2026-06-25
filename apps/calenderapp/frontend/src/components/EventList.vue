@@ -55,7 +55,27 @@
                     >
                       <div class="timeline-event-top">
                         <div class="timeline-event-title">{{ item.event_name || '未命名事件' }}</div>
-                        <el-tag v-if="item.is_active" size="small" type="danger">发酵中</el-tag>
+                        <div class="timeline-event-actions">
+                          <el-button
+                            size="small"
+                            :type="getReviewButtonType(item)"
+                            plain
+                            :loading="isReviewLoading(item)"
+                            @click.stop="emit('review', item)"
+                          >
+                            {{ getReviewButtonText(item) }}
+                          </el-button>
+                          <el-tag size="small" :type="eventTruthTagType(item)">{{ eventTruthTagText(item) }}</el-tag>
+                          <el-button
+                            link
+                            size="small"
+                            class="timeline-event-remove"
+                            title="从我的关注列表中移除"
+                            @click.stop="emit('unfavorite', item)"
+                          >
+                            ✕
+                          </el-button>
+                        </div>
                       </div>
                       <div class="timeline-event-summary">{{ previewText(item) }}</div>
                       <div class="timeline-event-meta">
@@ -78,7 +98,27 @@
                     >
                       <div class="timeline-event-top">
                         <div class="timeline-event-title">{{ item.event_name || '未命名事件' }}</div>
-                        <el-tag v-if="item.is_active" size="small" type="danger">发酵中</el-tag>
+                        <div class="timeline-event-actions">
+                          <el-button
+                            size="small"
+                            :type="getReviewButtonType(item)"
+                            plain
+                            :loading="isReviewLoading(item)"
+                            @click.stop="emit('review', item)"
+                          >
+                            {{ getReviewButtonText(item) }}
+                          </el-button>
+                          <el-tag size="small" :type="eventTruthTagType(item)">{{ eventTruthTagText(item) }}</el-tag>
+                          <el-button
+                            link
+                            size="small"
+                            class="timeline-event-remove"
+                            title="从我的关注列表中移除"
+                            @click.stop="emit('unfavorite', item)"
+                          >
+                            ✕
+                          </el-button>
+                        </div>
                       </div>
                       <div class="timeline-event-summary">{{ previewText(item) }}</div>
                       <div class="timeline-event-meta">
@@ -106,10 +146,12 @@ const props = defineProps({
   totalCount: { type: Number, default: 0 },
   cardTitle: { type: String, default: '事件列表' },
   hideSectionHeader: { type: Boolean, default: false },
-  scopeFilter: { type: String, default: 'all' }
+  scopeFilter: { type: String, default: 'all' },
+  reviewStatusMap: { type: Object, default: () => ({}) },
+  reviewLoadingMap: { type: Object, default: () => ({}) }
 })
 
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'review', 'unfavorite'])
 
 const industryBlockTitle = '行业事件'
 const stockBlockTitle = '个股事件'
@@ -135,6 +177,69 @@ function showStockSummary(group) {
   if (props.scopeFilter === 'industry') return false
   if (props.scopeFilter === 'stock') return true
   return group.stockEvents.length > 0
+}
+
+function getReviewState(item) {
+  const eventKey = String(item?.event_key || '')
+  const cached = props.reviewStatusMap?.[eventKey]
+  if (cached) {
+    return cached
+  }
+  const listStatus = String(item?.review_status || '').trim()
+  if (!listStatus) {
+    return null
+  }
+  return {
+    review_status: listStatus,
+    updated_at: String(item?.review_updated_at || '')
+  }
+}
+
+function isReviewLoading(item) {
+  const eventKey = String(item?.event_key || '')
+  return Boolean(props.reviewLoadingMap?.[eventKey])
+}
+
+function getReviewButtonText(item) {
+  if (isReviewLoading(item)) return '核查中'
+  const review = getReviewState(item)
+  const status = String(review?.review_status || '')
+  if (status === 'completed') return '查看核查'
+  if (status === 'failed') return '重试核查'
+  if (status === 'pending') return '核查中'
+  return '核查'
+}
+
+function getReviewButtonType(item) {
+  const review = getReviewState(item)
+  const status = String(review?.review_status || '')
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'pending') return 'primary'
+  return 'info'
+}
+
+// 核查真实性标签：仅当核查完成时按 event_truth 显示，否则统一显示“未核查”
+function eventTruthTagText(item) {
+  const review = getReviewState(item)
+  const status = String(review?.review_status || '')
+  if (status !== 'completed') return '未核查'
+  const truth = String(item?.event_truth || review?.event_truth || '').trim()
+  if (truth === 'true') return '已确认'
+  if (truth === 'dubious') return '存疑'
+  if (truth === 'false') return '失实'
+  return '未证实'
+}
+
+function eventTruthTagType(item) {
+  const review = getReviewState(item)
+  const status = String(review?.review_status || '')
+  if (status !== 'completed') return 'info'
+  const truth = String(item?.event_truth || review?.event_truth || '').trim()
+  if (truth === 'true') return 'success'
+  if (truth === 'dubious') return 'warning'
+  if (truth === 'false') return 'danger'
+  return 'info'
 }
 </script>
 
@@ -246,6 +351,26 @@ function showStockSummary(group) {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+}
+
+.timeline-event-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* "从关注列表移除" 按钮：低对比度叉号，悬浮时变红，避免抢占核查按钮的视觉权重。 */
+.timeline-event-remove {
+  margin-left: 4px;
+  padding: 0 6px !important;
+  color: var(--el-text-color-secondary);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.timeline-event-remove:hover {
+  color: var(--el-color-danger);
 }
 
 .timeline-event-title {

@@ -14,6 +14,7 @@
         @sync-batch="openBatchSyncDialog"
         @identify-dragon="identifyDragonNow"
         @download="downloadLimitUpData"
+        @download-events="downloadLimitUpEvents"
       />
     </div>
 
@@ -53,6 +54,7 @@
           </el-col>
           <el-col :xs="24" :lg="18">
             <LimitUpTable
+              :filters="filters"
               :rows="rows"
               :loading="loading"
               :total="total"
@@ -61,11 +63,12 @@
               :selected-count="selectedRows.length"
               :batch-updating="batchUpdating"
               @select="onStockSelect"
-              @refresh="reload"
+              @refresh="handleTableRefresh"
               @page-change="onPageChange"
               @selection-change="onSelectionChange"
               @batch-update="openBatchUpdateDialog"
               @stockkb="openStockkbDialog"
+              @update:filters="onFilterChange"
             />
           </el-col>
         </el-row>
@@ -236,7 +239,8 @@ import {
   syncFullFromTushare,
   syncDateRange,
   identifyDragon,
-  getTradingDays
+  getTradingDays,
+  exportLimitUpEvents
 } from '../api/limitUp'
 import { analyzeLimitUp, getLimitUpAnalysis } from '../api/limitUp'
 
@@ -256,6 +260,10 @@ const page = ref(1)
 const pageSize = ref(20)
 
 const filters = reactive({
+  close_min: null,
+  close_max: null,
+  open_count_min: null,
+  open_count_max: null,
   consecutive_min: null,
   strength_min: null,
   industry: '',
@@ -393,6 +401,15 @@ async function onDateChange() {
 
 function onFilterChange(newFilters) {
   Object.assign(filters, newFilters)
+  page.value = 1
+  reload()
+}
+
+function handleTableRefresh() {
+  filters.close_min = null
+  filters.close_max = null
+  filters.open_count_min = null
+  filters.open_count_max = null
   page.value = 1
   reload()
 }
@@ -760,6 +777,66 @@ async function downloadLimitUpData() {
     ElMessage.error('获取数据失败')
     console.error('下载失败:', e)
   }
+}
+
+async function downloadLimitUpEvents() {
+  const loadingMsg = ElMessage({
+    message: '正在整理当日解析事件...',
+    type: 'info',
+    duration: 0
+  })
+
+  try {
+    const resp = await exportLimitUpEvents(selectedDate.value, { ...filters })
+    loadingMsg.close()
+    downloadBlobResponse(resp, `涨停事件_${selectedDate.value}.csv`)
+    ElMessage.success(`已下载 ${selectedDate.value} 的解析事件`)
+  } catch (e) {
+    loadingMsg.close()
+    ElMessage.error(await extractBlobErrorMessage(e, '下载事件失败'))
+    console.error('下载事件失败:', e)
+  }
+}
+
+function downloadBlobResponse(resp, fallbackFilename) {
+  const blob = resp?.data instanceof Blob ? resp.data : new Blob([resp?.data ?? ''])
+  const disposition = resp?.headers?.['content-disposition'] || ''
+  const filename = parseFilenameFromDisposition(disposition) || fallbackFilename
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+function parseFilenameFromDisposition(disposition) {
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1])
+    } catch {
+      return utf8Match[1]
+    }
+  }
+  const plainMatch = disposition.match(/filename=\"?([^\";]+)\"?/i)
+  return plainMatch?.[1] || ''
+}
+
+async function extractBlobErrorMessage(error, fallbackMessage) {
+  const blob = error?.response?.data
+  if (blob instanceof Blob) {
+    try {
+      const text = await blob.text()
+      const payload = JSON.parse(text)
+      return payload?.message || payload?.msg || payload?.data?.message || fallbackMessage
+    } catch {
+      return fallbackMessage
+    }
+  }
+  return error?.response?.data?.message || error?.message || fallbackMessage
 }
 
 // ==================== 生命周期 ====================

@@ -37,6 +37,7 @@ EVENT_TYPE_VALUES: tuple[str, ...] = (
     "restructuring",          # 资产重组 / 资产收购
     "guarantee",              # 对外担保
     "pledge",                 # 股份质押 / 解除质押
+    "insider_trade",          # 董监高增减持 (雪球内部交易)
     "other",
 )
 

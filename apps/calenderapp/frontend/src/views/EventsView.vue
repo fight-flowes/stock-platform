@@ -40,7 +40,11 @@
             :selected-event-key="selectedEventKey"
             :total-count="futureCount"
             :hide-section-header="true"
+            :review-status-map="reviewStatusMap"
+            :review-loading-map="reviewLoadingMap"
             @select="selectEvent"
+            @review="openReview"
+            @unfavorite="onUnfavorite"
           />
         </div>
       </el-col>
@@ -55,7 +59,11 @@
             :total-count="filteredPastCount"
             :hide-section-header="true"
             :scope-filter="pastEventTypeFilter"
+            :review-status-map="reviewStatusMap"
+            :review-loading-map="reviewLoadingMap"
             @select="selectEvent"
+            @review="openReview"
+            @unfavorite="onUnfavorite"
           >
             <template #header-extra>
               <div class="events-header-filter">
@@ -102,23 +110,44 @@
         @open-stock="openStock"
       />
     </el-dialog>
+
+    <el-dialog
+      v-model="reviewDialogVisible"
+      width="min(960px, 92vw)"
+      top="4vh"
+      destroy-on-close
+      class="event-review-dialog"
+    >
+      <EventReviewDialog
+        :event="selectedReviewEvent"
+        :review="selectedReview"
+        :loading="loadingReview"
+        @refresh="refreshReview"
+      />
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import EventDetail from '../components/EventDetail.vue'
+import EventReviewDialog from '../components/EventReviewDialog.vue'
 import EventFilters from '../components/EventFilters.vue'
 import EventList from '../components/EventList.vue'
 import {
   getMarketEventDetail,
-  listMarketEvents
+  getMarketEventReview,
+  listMarketEvents,
+  refreshMarketEventReview,
+  runMarketEventReview,
+  unfavoriteMarketEvent,
 } from '../api/stockkb'
 import {
   createDefaultMarketEventDetail,
-  createDefaultMarketEventFilters
+  createDefaultMarketEventFilters,
+  createDefaultMarketEventReview
 } from '../types/marketEvent'
 
 const router = useRouter()
@@ -128,6 +157,9 @@ const monthStartText = `${todayText.slice(0, 8)}01`
 
 const loadingList = ref(false)
 const loadingDetail = ref(false)
+const loadingReview = ref(false)
+const REVIEW_POLL_INTERVAL_MS = 2500
+const REVIEW_POLL_MAX_ATTEMPTS = 120
 
 const filters = ref(
   createDefaultMarketEventFilters({
@@ -138,12 +170,18 @@ const filters = ref(
 )
 const items = ref([])
 const page = ref(1)
-const pageSize = ref(50)
+const pageSize = ref(20)
 const pastEventTypeFilter = ref('industry')
 
 const selectedEventKey = ref('')
 const selectedEvent = ref(null)
 const detailVisible = ref(false)
+const reviewDialogVisible = ref(false)
+const selectedReviewEvent = ref(null)
+const selectedReview = ref(createDefaultMarketEventReview())
+const reviewStatusMap = ref({})
+const reviewLoadingMap = ref({})
+const reviewPollMap = new Map()
 
 const selectedPastEventType = computed(() => normalizeEventTypeFilter(pastEventTypeFilter.value))
 const futureItems = computed(() => items.value.filter(item => isFutureEvent(item)))
@@ -201,6 +239,10 @@ onMounted(async () => {
   await loadEvents()
 })
 
+onBeforeUnmount(() => {
+  clearAllReviewPolls()
+})
+
 watch([filteredPastCount, pageSize], () => {
   const maxPage = Math.max(1, Math.ceil(filteredPastCount.value / pageSize.value))
   if (page.value > maxPage) {
@@ -245,8 +287,10 @@ async function loadEvents() {
   loadingList.value = true
   try {
     items.value = await fetchAllFavoriteEvents()
+    syncPendingReviewPolling(items.value)
 
     if (!items.value.length) {
+      clearAllReviewPolls()
       selectedEventKey.value = ''
       selectedEvent.value = null
       detailVisible.value = false
@@ -275,6 +319,44 @@ async function selectEvent(item) {
   }
 }
 
+// 「从我的关注列表移除」按钮的处理。卡片右上角的 ✕ → 这里。
+// 因为收藏是按 simple event 存的，移除一个 market event 实际上要把
+// 它下面所有被收藏的 simple event 一并取消——后端 API 已经做这个
+// 一对多展开。这里前端只需调一次接口 + 弹个确认 + 重新拉列表。
+async function onUnfavorite(item) {
+  const eventKey = String(item?.event_key || '').trim()
+  const eventName = String(item?.event_name || '该事件').slice(0, 50)
+  if (!eventKey) return
+  try {
+    await ElMessageBox.confirm(
+      `确认从关注列表中移除「${eventName}」？\n\n` +
+      `这会取消所有指向该事件的研报级收藏。如以后想重新关注，` +
+      `回到涨停页 → 点该股票的「事件」按钮 → 在弹窗里重新点星标即可。`,
+      '从关注列表移除',
+      {
+        confirmButtonText: '移除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+  } catch (_) {
+    // 用户点了取消
+    return
+  }
+  try {
+    const resp = await unfavoriteMarketEvent(eventKey)
+    const removed = resp?.data?.removed_count
+    ElMessage.success(
+      removed > 0
+        ? `已移除（取消了 ${removed} 条研报收藏）`
+        : '已移除'
+    )
+    await loadEvents()
+  } catch (e) {
+    ElMessage.error(e?.message || '移除失败，请稍后重试')
+  }
+}
+
 async function loadEventDetail(eventKey) {
   loadingDetail.value = true
   try {
@@ -288,6 +370,125 @@ async function loadEventDetail(eventKey) {
     return false
   } finally {
     loadingDetail.value = false
+  }
+}
+
+async function openReview(item) {
+  if (!item?.event_key) return
+
+  const eventKey = String(item.event_key || '').trim()
+  const currentStatus = resolveReviewStatus(item)
+  if (currentStatus === 'completed') {
+    selectedReviewEvent.value = item
+    selectedReview.value = createDefaultMarketEventReview()
+    reviewDialogVisible.value = true
+    loadingReview.value = true
+    try {
+      await loadReview(eventKey)
+    } catch (e) {
+      ElMessage.error(e?.message || '加载核查结果失败')
+    } finally {
+      loadingReview.value = false
+    }
+    return
+  }
+
+  if (currentStatus === 'pending' || reviewLoadingMap.value[eventKey]) {
+    ensureReviewPolling(eventKey)
+    ElMessage.info('核查进行中，完成后可点击“查看核查”')
+    return
+  }
+
+  try {
+    const data = await runReview(item, { force: false })
+    const latestStatus = String(data?.review?.review_status || resolveReviewStatus(item))
+    if (latestStatus === 'completed') {
+      ElMessage.success('核查完成，可点击“查看核查”')
+    } else if (latestStatus === 'pending') {
+      ensureReviewPolling(eventKey, { notifyOnComplete: true })
+      ElMessage.info('已开始核查，完成后按钮会自动更新')
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '加载核查结果失败')
+  }
+}
+
+function resolveReviewStatus(item) {
+  const eventKey = String(item?.event_key || '').trim()
+  if (!eventKey) return ''
+  const cached = reviewStatusMap.value[eventKey]
+  if (cached?.review_status) {
+    return String(cached.review_status)
+  }
+  return String(item?.review_status || '')
+}
+
+async function loadReview(eventKey) {
+  const resp = await getMarketEventReview(eventKey)
+  const data = resp?.data || {}
+  if (data?.found && data?.review) {
+    if (String(selectedReviewEvent.value?.event_key || '') === String(eventKey)) {
+      selectedReview.value = data.review
+    }
+    reviewStatusMap.value = {
+      ...reviewStatusMap.value,
+      [eventKey]: data.review
+    }
+  }
+  return data
+}
+
+async function runReview(item, { force = false } = {}) {
+  const eventKey = String(item?.event_key || '').trim()
+  if (!eventKey) return
+
+  reviewLoadingMap.value = {
+    ...reviewLoadingMap.value,
+    [eventKey]: true
+  }
+
+  try {
+    const resp = force
+      ? await refreshMarketEventReview(eventKey)
+      : await runMarketEventReview(eventKey)
+    const data = resp?.data || {}
+    if (data?.review) {
+      if (String(selectedReviewEvent.value?.event_key || '') === eventKey) {
+        selectedReview.value = data.review
+      }
+      reviewStatusMap.value = {
+        ...reviewStatusMap.value,
+        [eventKey]: data.review
+      }
+    }
+    return data
+  } catch (e) {
+    throw e
+  } finally {
+    reviewLoadingMap.value = {
+      ...reviewLoadingMap.value,
+      [eventKey]: false
+    }
+  }
+}
+
+async function refreshReview() {
+  if (!selectedReviewEvent.value?.event_key) return
+  loadingReview.value = true
+  try {
+    const eventKey = String(selectedReviewEvent.value.event_key || '').trim()
+    const data = await runReview(selectedReviewEvent.value, { force: true })
+    const latestStatus = String(data?.review?.review_status || '')
+    if (latestStatus === 'completed') {
+      ElMessage.success('核查结果已刷新')
+    } else {
+      ensureReviewPolling(eventKey)
+      ElMessage.info('已重新发起核查，结果完成后会自动刷新')
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '刷新核查失败')
+  } finally {
+    loadingReview.value = false
   }
 }
 
@@ -442,6 +643,97 @@ function extractMonthDay(value) {
     day: match[2].padStart(2, '0')
   }
 }
+
+function isTerminalReviewStatus(status) {
+  return status === 'completed' || status === 'failed'
+}
+
+function ensureReviewPolling(eventKey, { notifyOnComplete = false } = {}) {
+  const cleanEventKey = String(eventKey || '').trim()
+  if (!cleanEventKey) return
+
+  const existing = reviewPollMap.get(cleanEventKey)
+  if (existing) {
+    existing.notifyOnComplete = existing.notifyOnComplete || notifyOnComplete
+    return
+  }
+
+  const state = {
+    attempts: 0,
+    timerId: 0,
+    notifyOnComplete
+  }
+  reviewPollMap.set(cleanEventKey, state)
+
+  const tick = async () => {
+    const current = reviewPollMap.get(cleanEventKey)
+    if (!current) return
+
+    current.attempts += 1
+    let latestStatus = ''
+    try {
+      const data = await loadReview(cleanEventKey)
+      latestStatus = String(data?.review?.review_status || '')
+    } catch (_) {
+      latestStatus = ''
+    }
+
+    if (isTerminalReviewStatus(latestStatus)) {
+      clearReviewPoll(cleanEventKey)
+      if (latestStatus === 'completed' && current.notifyOnComplete) {
+        ElMessage.success('核查完成，可点击“查看核查”')
+      }
+      return
+    }
+
+    if (current.attempts >= REVIEW_POLL_MAX_ATTEMPTS) {
+      clearReviewPoll(cleanEventKey)
+      return
+    }
+
+    current.timerId = window.setTimeout(tick, REVIEW_POLL_INTERVAL_MS)
+  }
+
+  state.timerId = window.setTimeout(tick, REVIEW_POLL_INTERVAL_MS)
+}
+
+function clearReviewPoll(eventKey) {
+  const cleanEventKey = String(eventKey || '').trim()
+  if (!cleanEventKey) return
+  const state = reviewPollMap.get(cleanEventKey)
+  if (state?.timerId) {
+    window.clearTimeout(state.timerId)
+  }
+  reviewPollMap.delete(cleanEventKey)
+}
+
+function clearAllReviewPolls() {
+  for (const eventKey of [...reviewPollMap.keys()]) {
+    clearReviewPoll(eventKey)
+  }
+}
+
+function syncPendingReviewPolling(sourceItems) {
+  const pendingKeys = new Set(
+    (Array.isArray(sourceItems) ? sourceItems : [])
+      .map(item => ({
+        eventKey: String(item?.event_key || '').trim(),
+        status: resolveReviewStatus(item)
+      }))
+      .filter(item => item.eventKey && item.status === 'pending')
+      .map(item => item.eventKey)
+  )
+
+  for (const eventKey of [...reviewPollMap.keys()]) {
+    if (!pendingKeys.has(eventKey)) {
+      clearReviewPoll(eventKey)
+    }
+  }
+
+  for (const eventKey of pendingKeys) {
+    ensureReviewPolling(eventKey)
+  }
+}
 </script>
 
 <style scoped>
@@ -557,6 +849,27 @@ function extractMonthDay(value) {
 }
 
 :deep(.event-detail-dialog .el-dialog__body) {
+  padding: 0;
+  background: var(--sc-event-dialog-bg);
+}
+
+:deep(.event-review-dialog .el-dialog) {
+  --sc-event-dialog-bg: var(--el-bg-color-overlay);
+  --el-dialog-bg-color: var(--sc-event-dialog-bg);
+  --el-dialog-padding-primary: 0;
+  border-radius: 24px;
+  overflow: hidden;
+  background: var(--sc-event-dialog-bg);
+  border: none;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.16);
+  padding: 0;
+}
+
+:deep(.event-review-dialog .el-dialog__header) {
+  padding: 0;
+}
+
+:deep(.event-review-dialog .el-dialog__body) {
   padding: 0;
   background: var(--sc-event-dialog-bg);
 }

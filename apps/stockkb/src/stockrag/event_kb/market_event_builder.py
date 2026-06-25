@@ -143,7 +143,14 @@ class MarketEventBuilder:
                     "latest_active_date": latest_active_date,
                     "active_dates_json": active_dates,
                     "is_cross_stock": len(affected_stocks) > 1,
-                    "is_active": self._is_active_date(latest_active_date),
+                    # is_active is DEPRECATED — the old "5 days since latest_active_date"
+                    # heuristic produced misleading "发酵中" badges in the UI (see
+                    # apps/calenderapp/frontend git history). Kept on the model so
+                    # historical rows stay readable and the column doesn't need a
+                    # schema migration; new rows always write False until a fresh
+                    # definition replaces this. ``_is_active_date`` is kept as
+                    # historical reference but no longer called.
+                    "is_active": False,
                     "timeline_json": timeline,
                     "merge_method": cluster.merge_method,
                     "merge_confidence": primary_member.merge_confidence,
@@ -506,6 +513,15 @@ class MarketEventBuilder:
         return ""
 
     def _is_active_date(self, latest_active_date: str) -> bool:
+        """DEPRECATED — historical reference only.
+
+        This was the original heuristic backing the ``is_active`` column /
+        the frontend "发酵中" badge: "the event is active if the latest
+        report mentioning it landed within the last 5 days". The badge has
+        been removed and the writer no longer calls this — kept here so a
+        future redesign can compare its definition against alternatives
+        without spelunking through git history.
+        """
         parsed = self._parse_date_like(latest_active_date)
         if parsed is None:
             return False

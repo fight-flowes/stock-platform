@@ -25,7 +25,6 @@
       </div>
       <div class="actions">
         <el-dropdown split-button type="success" @click="$emit('sync')" :loading="syncing">
-          <el-icon><Download /></el-icon>
           同步数据
           <template #dropdown>
             <el-dropdown-menu>
@@ -39,16 +38,21 @@
         <el-button type="primary" @click="$emit('create')" title="添加涨停记录">
           <el-icon><Plus /></el-icon>
         </el-button>
-        <el-button type="warning" @click="$emit('download')" title="下载当日涨停数据">
-          <el-icon><Download /></el-icon>
-        </el-button>
+        <el-dropdown split-button type="warning" @click="$emit('download')" @command="onDownloadCommand">
+          下载
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="events">下载事件</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </div>
   </el-card>
 </template>
 
 <script setup>
-import { Plus, Download } from '@element-plus/icons-vue'
+import { Plus } from '@element-plus/icons-vue'
 
 defineProps({
   selectedDate: { type: String, required: true },
@@ -56,11 +60,27 @@ defineProps({
   syncing: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:selectedDate', 'date-change', 'create', 'sync', 'sync-full', 'sync-batch', 'identify-dragon', 'download'])
+const emit = defineEmits([
+  'update:selectedDate',
+  'date-change',
+  'create',
+  'sync',
+  'sync-full',
+  'sync-batch',
+  'identify-dragon',
+  'download',
+  'download-events'
+])
 
 function onDateChange(date) {
   emit('update:selectedDate', date)
   emit('date-change', date)
+}
+
+function onDownloadCommand(command) {
+  if (command === 'events') {
+    emit('download-events')
+  }
 }
 </script>
 

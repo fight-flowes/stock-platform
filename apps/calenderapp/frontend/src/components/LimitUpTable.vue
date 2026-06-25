@@ -30,7 +30,25 @@
       <el-table-column type="selection" width="55" />
       <el-table-column prop="stock_code" label="代码" width="110" />
       <el-table-column prop="stock_name" label="名称" min-width="90" />
-      <el-table-column label="价格" width="75" align="right">
+      <el-table-column label="价格" width="108" align="right">
+        <template #header>
+          <el-dropdown trigger="click" @command="handlePriceFilterCommand">
+            <span
+              class="column-filter-label"
+              :class="{ 'column-filter-label--active': isPriceFilterActive }"
+              @click.stop
+            >
+              价格
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="all">全部</el-dropdown-item>
+                <el-dropdown-item command="lte30">&lt;=30</el-dropdown-item>
+                <el-dropdown-item command="gt30">&gt;30</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </template>
         <template #default="{ row }">
           <span style="color: #f56c6c; font-weight: 600">{{ row.close ? row.close.toFixed(2) : '-' }}</span>
         </template>
@@ -67,7 +85,26 @@
         </template>
       </el-table-column>
       <el-table-column prop="first_limit_time" label="封板时间" width="90" />
-      <el-table-column label="开板" width="70" align="center">
+      <el-table-column label="开板" width="100" align="center">
+        <template #header>
+          <el-dropdown trigger="click" @command="handleOpenCountFilterCommand">
+            <span
+              class="column-filter-label"
+              :class="{ 'column-filter-label--active': isOpenCountFilterActive }"
+              @click.stop
+            >
+              开板
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="all">全部</el-dropdown-item>
+                <el-dropdown-item command="flat">一字</el-dropdown-item>
+                <el-dropdown-item command="lte3">&lt;=3</el-dropdown-item>
+                <el-dropdown-item command="gt3">&gt;3</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </template>
         <template #default="{ row }">
           <el-tag v-if="row.open_count === 0" type="success" size="small">一字</el-tag>
           <el-tag v-else :type="row.open_count <= 2 ? 'warning' : 'danger'" size="small">
@@ -146,13 +183,14 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { Refresh, Star, StarFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { listFavorites, toggleFavorite, upsertStock } from '../api/stocks'
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
+  filters: { type: Object, default: () => ({}) },
   loading: { type: Boolean, default: false },
   total: { type: Number, default: 0 },
   page: { type: Number, default: 1 },
@@ -161,12 +199,28 @@ const props = defineProps({
   batchUpdating: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['select', 'stockkb', 'refresh', 'page-change', 'selection-change', 'batch-update'])
+const emit = defineEmits(['select', 'stockkb', 'refresh', 'page-change', 'selection-change', 'batch-update', 'update:filters'])
 
 const currentPage = ref(props.page)
 const pageSize = ref(props.pageSizeProp)
 const favoritesSet = ref(new Set())
 const favoritesLoading = ref(false)
+const isPriceFilterActive = computed(() => {
+  const minValue = props.filters?.close_min
+  const maxValue = props.filters?.close_max
+  return !(
+    (minValue === null || minValue === undefined || minValue === '') &&
+    (maxValue === null || maxValue === undefined || maxValue === '')
+  )
+})
+const isOpenCountFilterActive = computed(() => {
+  const minValue = props.filters?.open_count_min
+  const maxValue = props.filters?.open_count_max
+  return !(
+    (minValue === null || minValue === undefined || minValue === '') &&
+    (maxValue === null || maxValue === undefined || maxValue === '')
+  )
+})
 
 watch(() => props.page, (val) => { currentPage.value = val })
 watch(() => props.pageSizeProp, (val) => { pageSize.value = val })
@@ -247,6 +301,38 @@ function onSelectionChange(selection) {
   emit('selection-change', selection)
 }
 
+function updateFilters(patch) {
+  emit('update:filters', patch)
+}
+
+function handlePriceFilterCommand(command) {
+  if (command === 'all') {
+    updateFilters({ close_min: null, close_max: null })
+    return
+  }
+  if (command === 'lte30') {
+    updateFilters({ close_min: null, close_max: 30 })
+    return
+  }
+  updateFilters({ close_min: 30, close_max: null })
+}
+
+function handleOpenCountFilterCommand(command) {
+  if (command === 'all') {
+    updateFilters({ open_count_min: null, open_count_max: null })
+    return
+  }
+  if (command === 'flat') {
+    updateFilters({ open_count_min: null, open_count_max: 0 })
+    return
+  }
+  if (command === 'lte3') {
+    updateFilters({ open_count_min: null, open_count_max: 3 })
+    return
+  }
+  updateFilters({ open_count_min: 3, open_count_max: null })
+}
+
 onMounted(() => {
   loadFavorites()
 })
@@ -255,6 +341,27 @@ onMounted(() => {
 <style scoped>
 .card {
   min-height: 400px;
+}
+
+.column-filter-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  box-sizing: border-box;
+  vertical-align: middle;
+  color: var(--el-table-header-text-color, var(--el-text-color-secondary));
+  font: inherit;
+  font-weight: 600;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.column-filter-label--active {
+  border-color: transparent;
 }
 
 .analysis-unavailable.is-disabled {

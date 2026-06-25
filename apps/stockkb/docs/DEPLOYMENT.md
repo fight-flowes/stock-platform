@@ -85,6 +85,14 @@ conda run --no-capture-output -n stock python -m stockrag import-minio-prefix \
 - `POST /kb/simple/reports`
 - `POST /kb/simple/events`
 - `GET /kb/simple/events/{event_id}`
+- `POST /kb/simple/market-events`
+- `GET /kb/simple/market-events/{event_key}`
+- `GET /kb/simple/market-events/{event_key}/timeline`
+- `GET /kb/simple/market-events/filters/meta`
+- `GET /kb/simple/market-events/{event_key}/review` — 读取核查结果
+- `PUT /kb/simple/market-events/{event_key}/review` — upsert 核查结果（`vibe_session_id=""` 显式清空死引用）
+- `POST /kb/simple/market-events/{event_key}/review/run` — 标记 pending
+- `GET /kb/simple/market-events/reviews/sessions` — 枚举非空 `vibe_session_id`（供 calenderapp GC）
 - `GET /kb/stats`
 
 以及导入接口：
@@ -95,10 +103,15 @@ conda run --no-capture-output -n stock python -m stockrag import-minio-prefix \
 
 ## 7. DuckDB 表
 
-当前只使用两张主表：
+当前使用的主表：
 
-- `kb_simple_report`
-- `kb_simple_event`
+- `kb_simple_report` — 报告
+- `kb_simple_event` — 单报告内抽取的事件
+- `kb_market_event` — 跨报告聚合的市场事件
+- `kb_market_event_member` — 市场事件成员映射
+- `kb_market_event_review` — 事件核查结果（含 `vibe_session_id` 指针）
+- `kb_simple_event_favorite` — 事件收藏
+- `kb_market_event_judge_cache` — 市场事件聚合判定缓存
 
 不再要求旧的复杂事件表、关系表和研究表。
 

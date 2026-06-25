@@ -4,7 +4,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app.db import Base, engine, ensure_schema
-from app.models import CalendarDay, CalendarEvent, Stock
+from app.models import Stock, StockGroup, StockGroupMember, StockNote, StockTag, StockTagBinding, LimitUpStock, LimitUpAnalysis
 
 
 def init_database():

@@ -13,7 +13,6 @@
         <el-tag v-if="event.primary_industry" size="small" type="info">{{ event.primary_industry }}</el-tag>
         <el-tag v-if="event.primary_theme" size="small" type="success">{{ event.primary_theme }}</el-tag>
         <el-tag v-if="event.is_cross_stock" size="small" type="warning">跨股票</el-tag>
-        <el-tag v-if="event.is_active" size="small" type="danger">发酵中</el-tag>
       </div>
 
       <div v-if="event.scope_reason" class="event-scope-reason">

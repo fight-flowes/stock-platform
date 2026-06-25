@@ -15,6 +15,7 @@ class APIConstants:
 
     ERROR_CODES: Dict[str, int] = {
         "VALIDATION_ERROR": 40001,
+        "UNAUTHORIZED": 40101,
         "NOT_FOUND": 40401,
         "INTERNAL_ERROR": 50001,
     }

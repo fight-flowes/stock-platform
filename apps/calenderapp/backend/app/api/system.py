@@ -30,7 +30,17 @@ class DBStatus(Resource):
                 ).scalars().all()
                 table_set = set(tables or [])
                 counts = {}
-                for t in ("events", "stocks", "calendar_days"):
+                tracked_tables = (
+                    "stocks",
+                    "stock_notes",
+                    "stock_groups",
+                    "stock_group_members",
+                    "stock_tags",
+                    "stock_tag_bindings",
+                    "limit_up_stocks",
+                    "limit_up_analyses",
+                )
+                for t in tracked_tables:
                     if t in table_set:
                         counts[t] = int(session.execute(text(f"SELECT COUNT(1) FROM {PGSCHEMA}.{t}")).scalar() or 0)
 
@@ -38,7 +48,7 @@ class DBStatus(Resource):
                 {
                     "engine": info,
                     "schema": PGSCHEMA,
-                    "tables": {t: (t in table_set) for t in ("events", "stocks", "calendar_days")},
+                    "tables": {t: (t in table_set) for t in tracked_tables},
                     "counts": counts,
                 }
             )

@@ -42,6 +42,9 @@ class StockkbMarketEventListItem:
     latest_active_date: str = ""
     active_dates: list[str] = field(default_factory=list)
     is_cross_stock: bool = False
+    # DEPRECATED — frozen False for new rows; historical rows preserve their
+    # original 5-day-heuristic value. Frontend "发酵中" badge has been removed
+    # and no UI consumes this field. Will be redefined later.
     is_active: bool = False
 
     def to_dict(self) -> dict[str, Any]:

@@ -30,6 +30,7 @@ class DuckDBBackend:
             self._ensure_market_event_columns(conn)
             self._ensure_market_event_member_columns(conn)
             self._ensure_market_event_judge_cache_columns(conn)
+            self._ensure_market_event_review_columns(conn)
 
     def upsert_simple_bundle(self, bundle: SimpleReportBundle) -> None:
         self.ensure_schema()
@@ -88,6 +89,7 @@ class DuckDBBackend:
                 "market_events": 0,
                 "market_event_members": 0,
                 "market_event_judge_cache": 0,
+                "market_event_reviews": 0,
             }
         self.ensure_schema()
         with self._connect() as conn:
@@ -97,6 +99,7 @@ class DuckDBBackend:
                 "market_events": int(conn.execute("SELECT COUNT(*) FROM kb_market_event").fetchone()[0]),
                 "market_event_members": int(conn.execute("SELECT COUNT(*) FROM kb_market_event_member").fetchone()[0]),
                 "market_event_judge_cache": int(conn.execute("SELECT COUNT(*) FROM kb_market_event_judge_cache").fetchone()[0]),
+                "market_event_reviews": int(conn.execute("SELECT COUNT(*) FROM kb_market_event_review").fetchone()[0]),
             }
 
     def query_simple_reports(
@@ -331,33 +334,37 @@ class DuckDBBackend:
         sql = [
             """
             SELECT
-                event_key,
-                event_name,
-                event_time_text,
-                event_content,
-                event_type,
-                event_scope,
-                scope_reason,
-                primary_industry,
-                primary_theme,
-                affected_stock_count,
-                affected_stocks_preview_json,
-                affected_industries_json,
-                affected_themes_json,
-                source_report_count,
-                first_seen_date,
-                latest_active_date,
-                active_dates_json,
-                is_cross_stock,
-                is_active,
+                kb_market_event.event_key AS event_key,
+                kb_market_event.event_name AS event_name,
+                kb_market_event.event_time_text AS event_time_text,
+                kb_market_event.event_content AS event_content,
+                kb_market_event.event_type AS event_type,
+                kb_market_event.event_scope AS event_scope,
+                kb_market_event.scope_reason AS scope_reason,
+                kb_market_event.primary_industry AS primary_industry,
+                kb_market_event.primary_theme AS primary_theme,
+                kb_market_event.affected_stock_count AS affected_stock_count,
+                kb_market_event.affected_stocks_preview_json AS affected_stocks_preview_json,
+                kb_market_event.affected_industries_json AS affected_industries_json,
+                kb_market_event.affected_themes_json AS affected_themes_json,
+                kb_market_event.source_report_count AS source_report_count,
+                kb_market_event.first_seen_date AS first_seen_date,
+                kb_market_event.latest_active_date AS latest_active_date,
+                kb_market_event.active_dates_json AS active_dates_json,
+                kb_market_event.is_cross_stock AS is_cross_stock,
+                kb_market_event.is_active AS is_active,
                 EXISTS (
                     SELECT 1
                     FROM kb_market_event_member m
                     JOIN kb_simple_event_favorite f ON f.event_id = m.event_id
                     WHERE m.event_key = kb_market_event.event_key
                 ) AS is_favorite,
-                merge_method
+                COALESCE(r.review_status, '') AS review_status,
+                COALESCE(r.event_truth, '') AS event_truth,
+                COALESCE(CAST(r.updated_at AS VARCHAR), '') AS review_updated_at,
+                kb_market_event.merge_method AS merge_method
             FROM kb_market_event
+            LEFT JOIN kb_market_event_review r ON r.event_key = kb_market_event.event_key
             """,
             *where_sql,
             f"ORDER BY {sort_column} {order}, event_name ASC",
@@ -394,34 +401,38 @@ class DuckDBBackend:
             row = conn.execute(
                 """
                 SELECT
-                    event_key,
-                    event_name,
-                    event_time_text,
-                    event_content,
-                    event_type,
-                    event_scope,
-                    scope_reason,
-                    primary_industry,
-                    primary_theme,
-                    risk_summary,
-                    affected_stocks_json,
-                    affected_industries_json,
-                    affected_themes_json,
-                    source_event_ids_json,
-                    first_seen_date,
-                    latest_active_date,
-                    active_dates_json,
-                    is_cross_stock,
-                    is_active,
+                    kb_market_event.event_key AS event_key,
+                    kb_market_event.event_name AS event_name,
+                    kb_market_event.event_time_text AS event_time_text,
+                    kb_market_event.event_content AS event_content,
+                    kb_market_event.event_type AS event_type,
+                    kb_market_event.event_scope AS event_scope,
+                    kb_market_event.scope_reason AS scope_reason,
+                    kb_market_event.primary_industry AS primary_industry,
+                    kb_market_event.primary_theme AS primary_theme,
+                    kb_market_event.risk_summary AS risk_summary,
+                    kb_market_event.affected_stocks_json AS affected_stocks_json,
+                    kb_market_event.affected_industries_json AS affected_industries_json,
+                    kb_market_event.affected_themes_json AS affected_themes_json,
+                    kb_market_event.source_event_ids_json AS source_event_ids_json,
+                    kb_market_event.first_seen_date AS first_seen_date,
+                    kb_market_event.latest_active_date AS latest_active_date,
+                    kb_market_event.active_dates_json AS active_dates_json,
+                    kb_market_event.is_cross_stock AS is_cross_stock,
+                    kb_market_event.is_active AS is_active,
                     EXISTS (
                         SELECT 1
                         FROM kb_market_event_member m
                         JOIN kb_simple_event_favorite f ON f.event_id = m.event_id
                         WHERE m.event_key = kb_market_event.event_key
                     ) AS is_favorite,
-                    merge_method
+                    COALESCE(r.review_status, '') AS review_status,
+                    COALESCE(r.event_truth, '') AS event_truth,
+                    COALESCE(CAST(r.updated_at AS VARCHAR), '') AS review_updated_at,
+                    kb_market_event.merge_method AS merge_method
                 FROM kb_market_event
-                WHERE event_key = ?
+                LEFT JOIN kb_market_event_review r ON r.event_key = kb_market_event.event_key
+                WHERE kb_market_event.event_key = ?
                 """,
                 [event_key],
             ).fetchone()
@@ -490,6 +501,161 @@ class DuckDBBackend:
             "date_max": sorted_dates[-1] if sorted_dates else "",
         }
 
+    def list_market_event_review_session_ids(self) -> list[dict[str, str]]:
+        """Lightweight enumerate endpoint used by the calenderapp GC sweep.
+
+        Returns one entry per row in ``kb_market_event_review`` whose
+        ``vibe_session_id`` is non-empty: ``{event_key, vibe_session_id}``.
+        Only the two columns are read so the GC does not have to scan full
+        review payloads.
+        """
+        if not self.db_path.exists():
+            return []
+        self.ensure_schema()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_key, vibe_session_id
+                FROM kb_market_event_review
+                WHERE vibe_session_id IS NOT NULL
+                  AND vibe_session_id <> ''
+                """
+            ).fetchall()
+        return [
+            {"event_key": str(row[0] or ""), "vibe_session_id": str(row[1] or "")}
+            for row in rows
+            if row and row[0] and row[1]
+        ]
+
+    def get_market_event_review(self, event_key: str) -> dict[str, Any]:
+        event_key = str(event_key or "").strip()
+        if not event_key or not self.db_path.exists():
+            return {"found": False, "event_key": event_key}
+        self.ensure_schema()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    event_key,
+                    review_status,
+                    review_version,
+                    review_source,
+                    vibe_session_id,
+                    event_truth,
+                    time_truth,
+                    content_truth,
+                    disposition,
+                    confidence,
+                    headline,
+                    summary,
+                    review_payload,
+                    source_snapshot,
+                    error_message,
+                    requested_at,
+                    completed_at,
+                    created_at,
+                    updated_at
+                FROM kb_market_event_review
+                WHERE event_key = ?
+                """,
+                [event_key],
+            ).fetchone()
+            if row is None:
+                return {"found": False, "event_key": event_key}
+            columns = [item[0] for item in conn.description]
+            payload = self._normalize_market_event_review_row(
+                self._serialize_mapping(dict(zip(columns, row, strict=True)))
+            )
+        return {"found": True, "event_key": event_key, "review": payload}
+
+    def upsert_market_event_review(self, event_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        event_key = str(event_key or "").strip()
+        if not event_key:
+            raise ValueError("event_key 不能为空")
+        self.ensure_schema()
+        now = datetime.utcnow().isoformat()
+        existing = self.get_market_event_review(event_key)
+        existing_review = existing.get("review") if existing.get("found") else {}
+
+        record = {
+            "event_key": event_key,
+            "review_status": str(payload.get("review_status") or existing_review.get("review_status") or "pending"),
+            "review_version": str(payload.get("review_version") or existing_review.get("review_version") or ""),
+            "review_source": str(payload.get("review_source") or existing_review.get("review_source") or ""),
+            # vibe_session_id supports explicit clearing: when the caller passes
+            # an empty string the upstream session is considered gone (for
+            # example deleted by the GC sweep) and we wipe the dead reference
+            # so the next review naturally re-creates a session.
+            "vibe_session_id": (
+                str(payload.get("vibe_session_id") or "")
+                if "vibe_session_id" in payload
+                else str(existing_review.get("vibe_session_id") or "")
+            ),
+            "event_truth": str(payload.get("event_truth") or existing_review.get("event_truth") or ""),
+            "time_truth": str(payload.get("time_truth") or existing_review.get("time_truth") or ""),
+            "content_truth": str(payload.get("content_truth") or existing_review.get("content_truth") or ""),
+            "disposition": str(payload.get("disposition") or existing_review.get("disposition") or ""),
+            "confidence": float(payload.get("confidence") if payload.get("confidence") not in (None, "") else existing_review.get("confidence") or 0.0),
+            "headline": str(payload.get("headline") or existing_review.get("headline") or ""),
+            "summary": str(payload.get("summary") or existing_review.get("summary") or ""),
+            "review_payload": payload.get("review_payload") if "review_payload" in payload else existing_review.get("review_payload") or {},
+            "source_snapshot": payload.get("source_snapshot") if "source_snapshot" in payload else existing_review.get("source_snapshot") or {},
+            "error_message": str(payload.get("error_message") or ""),
+            "requested_at": str(payload.get("requested_at") or existing_review.get("requested_at") or now),
+            "completed_at": str(payload.get("completed_at") or existing_review.get("completed_at") or ""),
+            "created_at": str(existing_review.get("created_at") or now),
+            "updated_at": now,
+        }
+
+        if record["review_status"] == "completed" and not record["completed_at"]:
+            record["completed_at"] = now
+        if record["review_status"] == "failed" and not record["completed_at"]:
+            record["completed_at"] = now
+        if record["review_status"] == "pending":
+            record["completed_at"] = ""
+            record["error_message"] = ""
+
+        with self._connect() as conn:
+            self._insert_record(conn, "kb_market_event_review", record, replace=True)
+        return self.get_market_event_review(event_key)
+
+    def set_market_event_review_pending(
+        self,
+        event_key: str,
+        *,
+        source_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        event_key = str(event_key or "").strip()
+        if not event_key:
+            raise ValueError("event_key 不能为空")
+
+        detail = self.query_market_event_detail(event_key)
+        if not detail.get("found", False):
+            return {"found": False, "event_key": event_key}
+
+        event_snapshot = source_snapshot if isinstance(source_snapshot, dict) else detail.get("event") or {}
+        result = self.upsert_market_event_review(
+            event_key,
+            {
+                "review_status": "pending",
+                "review_version": "event-review-mcp.v1",
+                "review_source": "vibe-trading:event-review-mcp",
+                "event_truth": "",
+                "time_truth": "",
+                "content_truth": "",
+                "disposition": "",
+                "confidence": 0.0,
+                "headline": "",
+                "summary": "",
+                "review_payload": {},
+                "source_snapshot": event_snapshot,
+                "error_message": "",
+                "requested_at": datetime.utcnow().isoformat(),
+            },
+        )
+        result["event"] = event_snapshot
+        return result
+
     def set_simple_event_favorite(self, event_id: str, *, is_favorite: bool) -> dict[str, Any]:
         event_id = str(event_id or "").strip()
         if not event_id:
@@ -522,6 +688,64 @@ class DuckDBBackend:
             else:
                 conn.execute("DELETE FROM kb_simple_event_favorite WHERE event_id = ?", [event_id])
         return {"found": True, "event_id": event_id, "is_favorite": bool(is_favorite)}
+
+    def unfavorite_market_event(self, event_key: str) -> dict[str, Any]:
+        """Bulk-clear all simple-event favorites that belong to a market
+        event. Used by the /events page's "remove from list" button:
+        operators see one card per market event but favourites are stored
+        per simple event, so removing the card has to fan out into deleting
+        every simple-event favourite that links back to this event_key.
+
+        Returns ``{found, event_key, removed_count, member_count}``. When
+        the market event itself does not exist returns ``found=False`` —
+        the caller can surface that as a 404.
+        """
+        event_key = str(event_key or "").strip()
+        if not event_key:
+            raise ValueError("event_key 不能为空")
+        if not self.db_path.exists():
+            return {"found": False, "event_key": event_key, "removed_count": 0, "member_count": 0}
+        self.ensure_schema()
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM kb_market_event WHERE event_key = ?",
+                [event_key],
+            ).fetchone()
+            if exists is None:
+                return {"found": False, "event_key": event_key, "removed_count": 0, "member_count": 0}
+
+            # Count how many simple events belong to this market event in
+            # total, and how many of those are currently favourited.
+            member_count = int(conn.execute(
+                "SELECT COUNT(*) FROM kb_market_event_member WHERE event_key = ?",
+                [event_key],
+            ).fetchone()[0] or 0)
+            removed_count = int(conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM kb_simple_event_favorite f
+                JOIN kb_market_event_member m ON m.event_id = f.event_id
+                WHERE m.event_key = ?
+                """,
+                [event_key],
+            ).fetchone()[0] or 0)
+
+            # Delete in one statement — DuckDB supports this subquery form.
+            conn.execute(
+                """
+                DELETE FROM kb_simple_event_favorite
+                WHERE event_id IN (
+                    SELECT event_id FROM kb_market_event_member WHERE event_key = ?
+                )
+                """,
+                [event_key],
+            )
+        return {
+            "found": True,
+            "event_key": event_key,
+            "removed_count": removed_count,
+            "member_count": member_count,
+        }
 
     def _connect(self, *, read_only: bool = False):
         try:
@@ -721,6 +945,9 @@ class DuckDBBackend:
         normalized["source_event_count"] = int(normalized.get("source_event_count") or 0)
         normalized["merge_method"] = str(normalized.get("merge_method") or "")
         normalized["is_favorite"] = bool(normalized.get("is_favorite", False))
+        normalized["review_status"] = str(normalized.get("review_status") or "")
+        normalized["event_truth"] = str(normalized.get("event_truth") or "")
+        normalized["review_updated_at"] = str(normalized.get("review_updated_at") or "")
         normalized["affected_stocks_preview"] = self._parse_json_list(normalized.get("affected_stocks_preview_json"))
         normalized["affected_industries"] = self._parse_json_string_list(normalized.get("affected_industries_json"))
         normalized["affected_themes"] = self._parse_json_string_list(normalized.get("affected_themes_json"))
@@ -732,6 +959,29 @@ class DuckDBBackend:
             normalized["affected_stocks"] = self._parse_json_list(normalized.get("affected_stocks_json"))
             normalized["source_event_ids"] = self._parse_json_string_list(normalized.get("source_event_ids_json"))
             normalized["source_reports"] = []
+        return normalized
+
+    def _normalize_market_event_review_row(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        normalized["event_key"] = str(normalized.get("event_key") or "")
+        normalized["review_status"] = str(normalized.get("review_status") or "")
+        normalized["review_version"] = str(normalized.get("review_version") or "")
+        normalized["review_source"] = str(normalized.get("review_source") or "")
+        normalized["vibe_session_id"] = str(normalized.get("vibe_session_id") or "")
+        normalized["event_truth"] = str(normalized.get("event_truth") or "")
+        normalized["time_truth"] = str(normalized.get("time_truth") or "")
+        normalized["content_truth"] = str(normalized.get("content_truth") or "")
+        normalized["disposition"] = str(normalized.get("disposition") or "")
+        normalized["confidence"] = float(normalized.get("confidence") or 0.0)
+        normalized["headline"] = str(normalized.get("headline") or "")
+        normalized["summary"] = str(normalized.get("summary") or "")
+        normalized["review_payload"] = self._parse_json_object(normalized.get("review_payload"))
+        normalized["source_snapshot"] = self._parse_json_object(normalized.get("source_snapshot"))
+        normalized["error_message"] = str(normalized.get("error_message") or "")
+        normalized["requested_at"] = str(normalized.get("requested_at") or "")
+        normalized["completed_at"] = str(normalized.get("completed_at") or "")
+        normalized["created_at"] = str(normalized.get("created_at") or "")
+        normalized["updated_at"] = str(normalized.get("updated_at") or "")
         return normalized
 
     def get_market_event_judge_cache(self, pair_key: str) -> dict[str, Any] | None:
@@ -852,7 +1102,10 @@ class DuckDBBackend:
                     "latest_active_date": latest_active_date,
                     "active_dates": active_dates,
                     "is_cross_stock": len(affected_stocks) > 1,
-                    "is_active": self._is_active_date(latest_active_date),
+                    # is_active DEPRECATED — see market_event_builder.py for the
+                    # full rationale. Always False until a new definition replaces
+                    # it; historical rows already stored in DuckDB are untouched.
+                    "is_active": False,
                     "timeline": timeline,
                 }
             )
@@ -1099,6 +1352,13 @@ class DuckDBBackend:
         return ""
 
     def _is_active_date(self, latest_active_date: str) -> bool:
+        """DEPRECATED — historical reference only.
+
+        Original heuristic backing the ``is_active`` column / "发酵中" UI badge:
+        "active if latest_active_date is within the last 5 days". The badge has
+        been removed and writers no longer call this. Kept for future redesigns
+        of the activity-tracking concept; safe to delete in a follow-up cleanup.
+        """
         parsed = self._parse_date_like(latest_active_date)
         if parsed is None:
             return False
@@ -1142,6 +1402,17 @@ class DuckDBBackend:
             items.append(text)
             seen.add(normalized)
         return items
+
+    def _parse_json_object(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if not isinstance(value, str) or not value.strip():
+            return {}
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
     def _ensure_market_event_cache(self) -> None:
         if not self.db_path.exists():
@@ -1291,6 +1562,36 @@ class DuckDBBackend:
             if column_name in existing_columns:
                 continue
             conn.execute(f"ALTER TABLE kb_market_event_judge_cache ADD COLUMN {column_name} {column_type}")
+
+    def _ensure_market_event_review_columns(self, conn: Any) -> None:
+        existing_columns = {
+            str(row[1]).strip().lower()
+            for row in conn.execute("PRAGMA table_info('kb_market_event_review')").fetchall()
+        }
+        required_columns = {
+            "review_status": "VARCHAR",
+            "review_version": "VARCHAR",
+            "review_source": "VARCHAR",
+            "vibe_session_id": "VARCHAR",
+            "event_truth": "VARCHAR",
+            "time_truth": "VARCHAR",
+            "content_truth": "VARCHAR",
+            "disposition": "VARCHAR",
+            "confidence": "DOUBLE",
+            "headline": "VARCHAR",
+            "summary": "VARCHAR",
+            "review_payload": "VARCHAR",
+            "source_snapshot": "VARCHAR",
+            "error_message": "VARCHAR",
+            "requested_at": "TIMESTAMP",
+            "completed_at": "TIMESTAMP",
+            "created_at": "TIMESTAMP",
+            "updated_at": "TIMESTAMP",
+        }
+        for column_name, column_type in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            conn.execute(f"ALTER TABLE kb_market_event_review ADD COLUMN {column_name} {column_type}")
 
     def _ensure_simple_report_columns(self, conn: Any) -> None:
         existing_columns = {

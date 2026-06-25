@@ -9,7 +9,7 @@
  * @property {boolean|null} favorites_only
  * @property {boolean|null} is_cross_stock
  * @property {number|null} min_affected_stock_count
- * @property {boolean|null} is_active
+ * @property {boolean|null} is_active  DEPRECATED — see kb_market_event schema. Frozen at false for new rows; UI no longer renders the "发酵中" badge that consumed this field. Reserved for redesign.
  */
 
 /**
@@ -50,7 +50,9 @@
  * @property {string} latest_active_date
  * @property {string[]} active_dates
  * @property {boolean} is_cross_stock
- * @property {boolean} is_active
+ * @property {boolean} is_active  DEPRECATED — frozen at false for new events. Historical rows preserved.
+ * @property {string} review_status
+ * @property {string} review_updated_at
  * @property {string} record_source
  * @property {boolean} is_favorite
  */
@@ -75,6 +77,8 @@
  * @property {MarketEventStock[]} affected_stocks
  * @property {MarketEventSourceReport[]} source_reports
  * @property {string[]} source_event_ids
+ * @property {string} review_status
+ * @property {string} review_updated_at
  * @property {string} record_source
  * @property {boolean} is_favorite
  */
@@ -85,6 +89,28 @@
  * @property {number} affected_stock_count
  * @property {MarketEventStock[]} stocks
  * @property {number} source_report_count
+ */
+
+/**
+ * @typedef {Object} MarketEventReview
+ * @property {string} event_key
+ * @property {string} review_status
+ * @property {string} review_version
+ * @property {string} review_source
+ * @property {string} event_truth
+ * @property {string} time_truth
+ * @property {string} content_truth
+ * @property {string} disposition
+ * @property {number} confidence
+ * @property {string} headline
+ * @property {string} summary
+ * @property {Object} review_payload
+ * @property {Object} source_snapshot
+ * @property {string} error_message
+ * @property {string} requested_at
+ * @property {string} completed_at
+ * @property {string} created_at
+ * @property {string} updated_at
  */
 
 /**
@@ -132,6 +158,8 @@ export function createDefaultMarketEventListItem() {
     active_dates: [],
     is_cross_stock: false,
     is_active: false,
+    review_status: '',
+    review_updated_at: '',
     record_source: 'market',
     is_favorite: false
   }
@@ -157,6 +185,8 @@ export function createDefaultMarketEventDetail() {
     affected_stocks: [],
     source_reports: [],
     source_event_ids: [],
+    review_status: '',
+    review_updated_at: '',
     record_source: 'market',
     is_favorite: false
   }
@@ -177,5 +207,28 @@ export function createDefaultMarketEventFilterMeta() {
     themes: [],
     date_min: '',
     date_max: ''
+  }
+}
+
+export function createDefaultMarketEventReview() {
+  return {
+    event_key: '',
+    review_status: '',
+    review_version: '',
+    review_source: '',
+    event_truth: '',
+    time_truth: '',
+    content_truth: '',
+    disposition: '',
+    confidence: 0,
+    headline: '',
+    summary: '',
+    review_payload: {},
+    source_snapshot: {},
+    error_message: '',
+    requested_at: '',
+    completed_at: '',
+    created_at: '',
+    updated_at: ''
   }
 }

@@ -36,6 +36,9 @@ PGDATABASE="${PGDATABASE:-calenderdb}"
 # 服务端口
 BACKEND_PORT="${BACKEND_PORT:-5000}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
+PUBLIC_WEB_HOST="${PUBLIC_WEB_HOST:-10.168.4.11}"
+VITE_API_BASE_URL="${VITE_API_BASE_URL:-http://127.0.0.1:${BACKEND_PORT}}"
 
 # ============================================================================
 # 辅助函数
@@ -308,7 +311,9 @@ start_frontend() {
     cd $FRONTEND_DIR
     
     # 使用 nohup 后台启动
-    nohup npm run dev > frontend.log 2>&1 &
+    nohup env \
+        VITE_API_BASE_URL="$VITE_API_BASE_URL" \
+        npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" > frontend.log 2>&1 &
     FRONTEND_PID=$!
     
     # 等待启动
@@ -317,6 +322,8 @@ start_frontend() {
     if check_port $FRONTEND_PORT; then
         log_success "前端服务启动成功 (PID: $FRONTEND_PID)"
         log_success "前端地址: http://127.0.0.1:$FRONTEND_PORT"
+        log_success "前端监听: http://$FRONTEND_HOST:$FRONTEND_PORT"
+        log_success "前端 API: $VITE_API_BASE_URL"
         echo $FRONTEND_PID > "$pid_file"
         return 0
     else

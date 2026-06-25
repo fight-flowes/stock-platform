@@ -1,0 +1,71 @@
+Windows PowerShell
+版权所有（C） Microsoft Corporation。保留所有权利。
+
+安装最新的 PowerShell，了解新功能和改进！https://aka.ms/PSWindows
+
+加载个人及系统配置文件用了 1658 毫秒。
+(base) PS C:\WINDOWS\system32> netsh interface portproxy add v4tov4 listenport=2222 listenaddress=0.0.0.0 connectport=22 connectaddress=192.168.128.173
+
+(base) PS C:\WINDOWS\system32> netsh interface portproxy show all
+
+侦听 ipv4:                 连接到 ipv4:
+
+地址            端口        地址            端口
+--------------- ----------  --------------- ----------
+0.0.0.0         2222        192.168.128.173 22
+
+(base) PS C:\WINDOWS\system32> New-NetFirewallRule -DisplayName "WSL2-SSH" -Direction Inbound -Protocol TCP -LocalPort 2222 -Action Allow
+
+
+Name                          : {9edfe2a7-56c9-47c8-904b-18171b40c5ce}
+DisplayName                   : WSL2-SSH
+Description                   :
+DisplayGroup                  :
+Group                         :
+Enabled                       : True
+Profile                       : Any
+Platform                      : {}
+Direction                     : Inbound
+Action                        : Allow
+EdgeTraversalPolicy           : Block
+LooseSourceMapping            : False
+LocalOnlyMapping              : False
+Owner                         :
+PrimaryStatus                 : OK
+Status                        : 已从存储区成功分析规则。 (65536)
+EnforcementStatus             : NotApplicable
+PolicyStoreSource             : PersistentStore
+PolicyStoreSourceType         : Local
+RemoteDynamicKeywordAddresses : {}
+PolicyAppId                   :
+PackageFamilyName             :
+
+
+
+(base) PS C:\WINDOWS\system32> netstat -an | findstr 2222
+  TCP    0.0.0.0:2222           0.0.0.0:0              LISTENING
+(base) PS C:\WINDOWS\system32> ipconfig
+
+Windows IP 配置
+
+
+未知适配器 VirtualNet:
+
+   媒体状态  . . . . . . . . . . . . : 媒体已断开连接
+   连接特定的 DNS 后缀 . . . . . . . :
+
+以太网适配器 以太网:
+
+   连接特定的 DNS 后缀 . . . . . . . :
+   本地链接 IPv6 地址. . . . . . . . : fe80::a957:c4d3:8ffd:1bb4%10
+   IPv4 地址 . . . . . . . . . . . . : 10.168.4.18
+   子网掩码  . . . . . . . . . . . . : 255.255.255.0
+   默认网关. . . . . . . . . . . . . : 10.168.4.254
+
+以太网适配器 vEthernet (WSL (Hyper-V firewall)):
+
+   连接特定的 DNS 后缀 . . . . . . . :
+   本地链接 IPv6 地址. . . . . . . . : fe80::40aa:155f:45d4:f405%31
+   IPv4 地址 . . . . . . . . . . . . : 192.168.128.1
+   子网掩码  . . . . . . . . . . . . : 255.255.240.0
+   默认网关. . . . . . . . . . . . . :

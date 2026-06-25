@@ -1,40 +1,57 @@
 import axios from 'axios'
+import { getHolidayStatus } from '../utils/holiday'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5000'
 
+function isFallbackTradingDay(dateText) {
+  const date = new Date(`${dateText}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return false
+  const weekday = date.getDay()
+  if (weekday === 0 || weekday === 6) return false
+  const holiday = getHolidayStatus(date)
+  return holiday.type !== 'rest'
+}
+
+function buildFallbackTradingDays(startDate, endDate) {
+  const result = []
+  const cursor = new Date(`${startDate}T00:00:00`)
+  const end = new Date(`${endDate}T00:00:00`)
+  if (Number.isNaN(cursor.getTime()) || Number.isNaN(end.getTime()) || cursor > end) {
+    return result
+  }
+
+  while (cursor <= end) {
+    const y = cursor.getFullYear()
+    const m = String(cursor.getMonth() + 1).padStart(2, '0')
+    const d = String(cursor.getDate()).padStart(2, '0')
+    const dateText = `${y}-${m}-${d}`
+    if (isFallbackTradingDay(dateText)) {
+      result.push(dateText)
+    }
+    cursor.setDate(cursor.getDate() + 1)
+  }
+
+  return result.reverse()
+}
+
 /**
  * 获取交易日历（交易日列表）
- * 优先使用日历数据，如果日历数据不完整则从涨停数据推断
+ * 优先从涨停数据推断；若区间内暂无涨停记录，则回退为工作日近似。
  */
 export async function getTradingDays(startDate, endDate) {
   try {
-    // 尝试从日历API获取交易日
-    const resp = await axios.get(`${API_BASE}/api/calendar/days`, {
-      params: { start_date: startDate, end_date: endDate }
-    })
-    const items = resp.data?.data?.items || []
-    const tradingDays = items
-      .filter(d => d.is_trading_day)
-      .map(d => d.date)
-      .sort()
-      .reverse()
-    
-    // 如果有交易日数据，直接返回
-    if (tradingDays.length > 0) {
-      return tradingDays
-    }
-    
-    // 日历数据不完整，从涨停数据推断交易日
     const limitUpResp = await axios.get(`${API_BASE}/api/limit-up/`, {
       params: { start_date: startDate, end_date: endDate, page_size: 500 }
     })
     const limitUpItems = limitUpResp.data?.data?.items || []
-    // 提取所有涨停日期，去重并排序
     const dates = [...new Set(limitUpItems.map(item => item.limit_up_date))]
-    return dates.sort().reverse() // 从近到远
+    if (dates.length > 0) {
+      return dates.sort().reverse()
+    }
+    return buildFallbackTradingDays(startDate, endDate)
   } catch (e) {
     console.error('获取交易日失败:', e)
-    return []
+    return buildFallbackTradingDays(startDate, endDate)
   }
 }
 
@@ -250,6 +267,24 @@ export function exportLimitUps(startDate, endDate, format = 'csv') {
   if (endDate) params.append('end_date', endDate)
   params.append('format', format)
   window.open(`${API_BASE}/api/limit-up/export?${params}`, '_blank')
+}
+
+/**
+ * 导出当日涨停解析事件
+ * @param {string} date - 交易日期
+ * @param {object} filters - 当前筛选条件
+ */
+export async function exportLimitUpEvents(date, filters = {}) {
+  const params = new URLSearchParams()
+  if (date) params.append('date', date)
+  Object.entries(filters || {}).forEach(([key, value]) => {
+    if (value === null || value === undefined || value === '') return
+    params.append(key, value)
+  })
+  return axios.get(`${API_BASE}/api/limit-up/events-export`, {
+    params,
+    responseType: 'blob'
+  })
 }
 
 /**

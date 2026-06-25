@@ -21,5 +21,13 @@ Importing this package side-effect-registers every adapter into
 from . import company_calendar_em  # noqa: F401
 from . import earnings_forecast_em  # noqa: F401
 from . import macro_calendar_ws  # noqa: F401
+from . import ipo_cninfo  # noqa: F401
+from . import insider_trade_xq  # noqa: F401
 
-__all__ = ["company_calendar_em", "earnings_forecast_em", "macro_calendar_ws"]
+__all__ = [
+    "company_calendar_em",
+    "earnings_forecast_em",
+    "macro_calendar_ws",
+    "ipo_cninfo",
+    "insider_trade_xq",
+]

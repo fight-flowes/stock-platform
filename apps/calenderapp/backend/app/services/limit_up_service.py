@@ -366,6 +366,10 @@ class LimitUpService:
         end_date: Optional[str] = None,
         consecutive_min: Optional[int] = None,
         consecutive_max: Optional[int] = None,
+        close_min: Optional[float] = None,
+        close_max: Optional[float] = None,
+        open_count_min: Optional[int] = None,
+        open_count_max: Optional[int] = None,
         industry: Optional[str] = None,
         concept: Optional[str] = None,
         strength_min: Optional[int] = None,
@@ -393,6 +397,14 @@ class LimitUpService:
             where.append(LimitUpStock.consecutive_days >= int(consecutive_min))
         if consecutive_max is not None:
             where.append(LimitUpStock.consecutive_days <= int(consecutive_max))
+        if close_min is not None and str(close_min).strip() != "":
+            where.append(LimitUpStock.close > float(close_min))
+        if close_max is not None and str(close_max).strip() != "":
+            where.append(LimitUpStock.close <= float(close_max))
+        if open_count_min is not None and str(open_count_min).strip() != "":
+            where.append(LimitUpStock.open_count > int(open_count_min))
+        if open_count_max is not None and str(open_count_max).strip() != "":
+            where.append(LimitUpStock.open_count <= int(open_count_max))
         if industry:
             where.append(LimitUpStock.industry == industry)
         if concept:

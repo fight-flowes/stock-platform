@@ -2,6 +2,8 @@ from flask import request
 from flask_restx import Namespace, Resource
 
 from app.api.params import parse_date, parse_int
+from app.services.event_review_service import EventReviewService, EventReviewServiceError
+from app.services.review_session_gc_service import ReviewSessionGCService
 from app.services.stockkb_proxy_service import StockkbProxyError, StockkbProxyService
 from config.api_config import APIConstants, APIResponse
 
@@ -159,6 +161,10 @@ class StockkbMarketEvents(Resource):
                 "favorites_only": raw_filters.get("favorites_only"),
                 "is_cross_stock": raw_filters.get("is_cross_stock"),
                 "min_affected_stock_count": raw_filters.get("min_affected_stock_count"),
+                # DEPRECATED filter — kept for backward compatibility, but
+                # new rows write is_active=False so this can no longer narrow
+                # results meaningfully. Will be removed once the activity
+                # concept is redefined.
                 "is_active": raw_filters.get("is_active"),
             }
             data = StockkbProxyService.list_market_events(
@@ -276,6 +282,92 @@ class StockkbMarketEventTimeline(Resource):
             )
 
 
+@stockkb_ns.route("/market-events/<string:event_key>/review")
+class StockkbMarketEventReview(Resource):
+    def get(self, event_key: str):
+        try:
+            data = EventReviewService.get_review(event_key)
+            return APIResponse.success(data)
+        except ValueError as exc:
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["VALIDATION_ERROR"],
+                    http_status=400,
+                ),
+                400,
+            )
+        except (StockkbProxyError, EventReviewServiceError) as exc:
+            http_status = getattr(exc, "http_status", 500)
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["INTERNAL_ERROR"],
+                    http_status=http_status,
+                ),
+                http_status,
+            )
+
+
+@stockkb_ns.route("/market-events/<string:event_key>/review/run")
+class StockkbMarketEventReviewRun(Resource):
+    def post(self, event_key: str):
+        try:
+            data = EventReviewService.run_review(event_key, force=False)
+            review = data.get("review") if isinstance(data.get("review"), dict) else {}
+            status = str(review.get("review_status") or "")
+            source = str(data.get("source") or "")
+            if status == "completed" and source == "cache":
+                return APIResponse.success(data, message="已返回缓存核查结果")
+            return APIResponse.success(data, message="事件核查已启动"), 202
+        except ValueError as exc:
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["VALIDATION_ERROR"],
+                    http_status=400,
+                ),
+                400,
+            )
+        except (StockkbProxyError, EventReviewServiceError) as exc:
+            http_status = getattr(exc, "http_status", 500)
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["INTERNAL_ERROR"],
+                    http_status=http_status,
+                ),
+                http_status,
+            )
+
+
+@stockkb_ns.route("/market-events/<string:event_key>/review/refresh")
+class StockkbMarketEventReviewRefresh(Resource):
+    def post(self, event_key: str):
+        try:
+            data = EventReviewService.run_review(event_key, force=True)
+            return APIResponse.success(data, message="事件核查刷新已启动"), 202
+        except ValueError as exc:
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["VALIDATION_ERROR"],
+                    http_status=400,
+                ),
+                400,
+            )
+        except (StockkbProxyError, EventReviewServiceError) as exc:
+            http_status = getattr(exc, "http_status", 500)
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["INTERNAL_ERROR"],
+                    http_status=http_status,
+                ),
+                http_status,
+            )
+
+
 @stockkb_ns.route("/events/<string:event_id>/favorite")
 class StockkbEventFavorite(Resource):
     def post(self, event_id: str):
@@ -332,3 +424,70 @@ class StockkbEventFavorite(Resource):
                 ),
                 400,
             )
+
+
+@stockkb_ns.route("/market-events/<string:event_key>/favorite")
+class StockkbMarketEventFavorite(Resource):
+    """Bulk-unfavorite all simple-event favorites under a market event.
+
+    The /events page in the frontend lists market events (聚合后的事件)，
+    one card per event_key. Per-card "remove from list" UI hits this
+    endpoint, which fans out into clearing every simple-event favourite
+    that links back to the given event_key — the only way to make that
+    market event stop appearing on the favourites-only list given the
+    storage model is per-simple-event.
+    """
+
+    def delete(self, event_key: str):
+        try:
+            data = StockkbProxyService.unfavorite_market_event(event_key)
+            if not data.get("found", False):
+                return (
+                    APIResponse.error(
+                        message=f"事件不存在: {event_key}",
+                        code=APIConstants.ERROR_CODES["NOT_FOUND"],
+                        http_status=404,
+                    ),
+                    404,
+                )
+            return APIResponse.success(data, message="已从收藏列表移除")
+        except ValueError as exc:
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["VALIDATION_ERROR"],
+                    http_status=400,
+                ),
+                400,
+            )
+        except StockkbProxyError as exc:
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["INTERNAL_ERROR"],
+                    http_status=exc.http_status,
+                ),
+                exc.http_status,
+            )
+
+
+@stockkb_ns.route("/review/gc/run")
+class ReviewSessionGCRun(Resource):
+    """Manually trigger one GC sweep — same code path as the daily scheduler.
+    Useful for debugging / running the cleanup on demand without waiting for
+    the next scheduled run.
+    """
+
+    def post(self):
+        result = ReviewSessionGCService.run_once()
+        return APIResponse.success(result.as_dict(), message="GC 已执行")
+
+
+@stockkb_ns.route("/review/gc/status")
+class ReviewSessionGCStatus(Resource):
+    """Return the most recent GC run summary, or an empty payload when the
+    scheduler has not run yet in this process."""
+
+    def get(self):
+        last = ReviewSessionGCService.last_result()
+        return APIResponse.success({"last_run": last})

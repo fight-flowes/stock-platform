@@ -86,6 +86,10 @@ MinIO / Local Markdown
 - `GET /kb/simple/market-events/{event_key}`
 - `GET /kb/simple/market-events/{event_key}/timeline`
 - `GET /kb/simple/market-events/filters/meta`
+- `GET /kb/simple/market-events/{event_key}/review` — 读取核查结果
+- `PUT /kb/simple/market-events/{event_key}/review` — upsert 核查结果（`vibe_session_id=""` 表示显式清空死引用）
+- `POST /kb/simple/market-events/{event_key}/review/run` — 标记 pending
+- `GET /kb/simple/market-events/reviews/sessions` — 轻量枚举所有非空 `vibe_session_id`（供 calenderapp GC 使用）
 - `GET /kb/stats`
 
 不再提供旧的：

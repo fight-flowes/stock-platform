@@ -4,11 +4,46 @@ from flask_restx import Namespace, Resource, fields
 
 from app.api.params import parse_bool, parse_date, parse_int
 from app.services.limit_up_service import LimitUpService
+from app.services.stockkb_proxy_service import StockkbProxyError, StockkbProxyService
 from config.api_config import APIConstants, APIResponse
 from app.config import get_tushare_pro
 
 
 limit_up_ns = Namespace("limit-up", description="涨停股票管理")
+
+
+def _limit_up_query_filters(args):
+    return {
+        "start_date": args.get("start_date"),
+        "end_date": args.get("end_date"),
+        "consecutive_min": args.get("consecutive_min"),
+        "consecutive_max": args.get("consecutive_max"),
+        "close_min": args.get("close_min"),
+        "close_max": args.get("close_max"),
+        "open_count_min": args.get("open_count_min"),
+        "open_count_max": args.get("open_count_max"),
+        "industry": args.get("industry"),
+        "concept": args.get("concept"),
+        "strength_min": args.get("strength_min"),
+        "strength_max": args.get("strength_max"),
+        "is_dragon_head": parse_bool(args.get("is_dragon_head"), default=None),
+        "limit_up_type": args.get("limit_up_type"),
+        "q": args.get("q"),
+    }
+
+
+def _join_values(values, *, item_sep=" | ", pair_sep=" "):
+    normalized = []
+    for value in values or []:
+        if isinstance(value, dict):
+            left = str(value.get("stock_name") or "").strip()
+            right = str(value.get("stock_code") or "").strip()
+            text = (left + pair_sep + right).strip() if left or right else ""
+        else:
+            text = str(value or "").strip()
+        if text:
+            normalized.append(text)
+    return item_sep.join(normalized)
 
 limit_up_model = limit_up_ns.model(
     "LimitUpStock",
@@ -53,6 +88,10 @@ class LimitUps(Resource):
     @limit_up_ns.param("end_date", "结束日期 YYYY-MM-DD")
     @limit_up_ns.param("consecutive_min", "最小连板数", type=int)
     @limit_up_ns.param("consecutive_max", "最大连板数", type=int)
+    @limit_up_ns.param("close_min", "最低价格（严格大于）", type=float)
+    @limit_up_ns.param("close_max", "最高价格", type=float)
+    @limit_up_ns.param("open_count_min", "最小开板次数（严格大于）", type=int)
+    @limit_up_ns.param("open_count_max", "最大开板次数", type=int)
     @limit_up_ns.param("industry", "行业筛选")
     @limit_up_ns.param("concept", "概念筛选")
     @limit_up_ns.param("strength_min", "最小强度等级", type=int)
@@ -73,17 +112,7 @@ class LimitUps(Resource):
         result = LimitUpService.list_limit_ups(
             page=page,
             page_size=page_size,
-            start_date=args.get("start_date"),
-            end_date=args.get("end_date"),
-            consecutive_min=args.get("consecutive_min"),
-            consecutive_max=args.get("consecutive_max"),
-            industry=args.get("industry"),
-            concept=args.get("concept"),
-            strength_min=args.get("strength_min"),
-            strength_max=args.get("strength_max"),
-            is_dragon_head=parse_bool(args.get("is_dragon_head"), default=None),
-            limit_up_type=args.get("limit_up_type"),
-            q=args.get("q"),
+            **_limit_up_query_filters(args),
         )
         return APIResponse.paginated(
             data=result["items"],
@@ -362,6 +391,152 @@ class LimitUpExport(Resource):
             resp.headers["Content-Type"] = "text/csv; charset=utf-8"
             resp.headers["Content-Disposition"] = f"attachment; filename=limit_up_export_{datetime.now().strftime('%Y%m%d')}.csv"
             return resp
+
+
+@limit_up_ns.route("/events-export")
+class LimitUpEventsExport(Resource):
+    @limit_up_ns.param("date", "交易日期 YYYY-MM-DD", required=True)
+    @limit_up_ns.param("consecutive_min", "最小连板数", type=int)
+    @limit_up_ns.param("consecutive_max", "最大连板数", type=int)
+    @limit_up_ns.param("close_min", "最低价格（严格大于）", type=float)
+    @limit_up_ns.param("close_max", "最高价格", type=float)
+    @limit_up_ns.param("open_count_min", "最小开板次数（严格大于）", type=int)
+    @limit_up_ns.param("open_count_max", "最大开板次数", type=int)
+    @limit_up_ns.param("industry", "行业筛选")
+    @limit_up_ns.param("concept", "概念筛选")
+    @limit_up_ns.param("strength_min", "最小强度等级", type=int)
+    @limit_up_ns.param("strength_max", "最大强度等级", type=int)
+    @limit_up_ns.param("is_dragon_head", "仅龙头", type=bool)
+    @limit_up_ns.param("limit_up_type", "涨停类型")
+    @limit_up_ns.param("q", "搜索关键词")
+    def get(self):
+        """导出当日涨停解析事件"""
+        import csv
+        import io
+
+        args = request.args
+        trade_date = parse_date(args.get("date"), required=True)
+        filters = _limit_up_query_filters(args)
+        filters["start_date"] = trade_date
+        filters["end_date"] = trade_date
+
+        try:
+            result = LimitUpService.list_limit_ups(
+                page=1,
+                page_size=5000,
+                **filters,
+            )
+            limit_up_items = result.get("items", [])
+            report_candidates = [item for item in limit_up_items if item.get("has_analysis_report")]
+
+            rows = []
+            failed_count = 0
+            for item in report_candidates:
+                stock_code = str(item.get("stock_code") or "").strip()
+                stock_name = str(item.get("stock_name") or "").strip()
+                if not stock_code:
+                    continue
+                try:
+                    events_payload = StockkbProxyService.list_all_events(
+                        stock_code=stock_code,
+                        report_date=trade_date,
+                        page_size=200,
+                    )
+                    event_items = events_payload.get("items") or []
+                    if not event_items:
+                        continue
+                    report_summary = StockkbProxyService.get_report_summary(stock_code, trade_date)
+                except (StockkbProxyError, ValueError):
+                    failed_count += 1
+                    continue
+
+                for event in event_items:
+                    rows.append(
+                        [
+                            trade_date,
+                            stock_code,
+                            stock_name,
+                            item.get("consecutive_days", 1),
+                            "是" if item.get("is_dragon_head") else "否",
+                            item.get("industry", "") or "",
+                            report_summary.get("report_title", "") or event.get("report_title", "") or "",
+                            report_summary.get("core_logic", "") or "",
+                            report_summary.get("risk_summary", "") or "",
+                            event.get("event_id", "") or "",
+                            event.get("event_name", "") or "",
+                            event.get("event_time_text", "") or "",
+                            event.get("event_scope", "") or "",
+                            event.get("event_type", "") or "",
+                            event.get("scope_reason", "") or "",
+                            event.get("event_content", "") or "",
+                            event.get("source_name", "") or "",
+                            event.get("source_url", "") or "",
+                            _join_values(event.get("affected_stocks")),
+                            _join_values(event.get("affected_industries")),
+                            _join_values(event.get("affected_themes")),
+                        ]
+                    )
+
+            if not rows:
+                if report_candidates and failed_count == len(report_candidates):
+                    return (
+                        APIResponse.error(
+                            message="事件导出失败，stockkb 数据暂时不可用",
+                            code=APIConstants.ERROR_CODES["INTERNAL_ERROR"],
+                            http_status=502,
+                        ),
+                        502,
+                    )
+                return (
+                    APIResponse.error(
+                        message="当日暂无可导出的解析事件",
+                        code=APIConstants.ERROR_CODES["NOT_FOUND"],
+                        http_status=404,
+                    ),
+                    404,
+                )
+
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(
+                [
+                    "涨停日期",
+                    "股票代码",
+                    "股票名称",
+                    "连板数",
+                    "是否龙头",
+                    "所属行业",
+                    "报告标题",
+                    "上涨逻辑",
+                    "风险摘要",
+                    "事件ID",
+                    "事件名称",
+                    "事件时间",
+                    "事件范围",
+                    "事件类型",
+                    "范围说明",
+                    "事件内容",
+                    "来源平台",
+                    "来源链接",
+                    "影响个股",
+                    "影响行业",
+                    "影响主题",
+                ]
+            )
+            writer.writerows(rows)
+            resp = make_response("\ufeff" + output.getvalue())
+            resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+            resp.headers["Content-Disposition"] = f"attachment; filename=limit_up_events_{trade_date}.csv"
+            return resp
+        except ValueError as exc:
+            return (
+                APIResponse.error(
+                    message=str(exc),
+                    code=APIConstants.ERROR_CODES["VALIDATION_ERROR"],
+                    http_status=400,
+                ),
+                400,
+            )
 
 
 @limit_up_ns.route("/import")

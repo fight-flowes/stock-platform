@@ -62,7 +62,7 @@ defineProps({
 const emit = defineEmits(['update:filters'])
 
 function updateFilter(key, value) {
-  emit('update:filters', { ...key, [key]: value })
+  emit('update:filters', { [key]: value })
 }
 </script>
 

@@ -64,6 +64,11 @@ DDL_STATEMENTS = (
         latest_active_date VARCHAR,
         active_dates_json VARCHAR,
         is_cross_stock BOOLEAN,
+        -- is_active: DEPRECATED. Old "5-day activity" heuristic, see
+        -- market_event_builder._is_active_date for historical reference.
+        -- New writes always set FALSE; historical rows preserved as-is.
+        -- The column itself is kept (no ALTER TABLE) until a fresh
+        -- activity concept replaces it.
         is_active BOOLEAN,
         timeline_json VARCHAR,
         merge_method VARCHAR,
@@ -103,6 +108,29 @@ DDL_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS kb_simple_event_favorite (
         event_id VARCHAR PRIMARY KEY,
+        created_at TIMESTAMP,
+        updated_at TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS kb_market_event_review (
+        event_key VARCHAR PRIMARY KEY,
+        review_status VARCHAR NOT NULL,
+        review_version VARCHAR,
+        review_source VARCHAR,
+        vibe_session_id VARCHAR,
+        event_truth VARCHAR,
+        time_truth VARCHAR,
+        content_truth VARCHAR,
+        disposition VARCHAR,
+        confidence DOUBLE,
+        headline VARCHAR,
+        summary VARCHAR,
+        review_payload VARCHAR,
+        source_snapshot VARCHAR,
+        error_message VARCHAR,
+        requested_at TIMESTAMP,
+        completed_at TIMESTAMP,
         created_at TIMESTAMP,
         updated_at TIMESTAMP
     )

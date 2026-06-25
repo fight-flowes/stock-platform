@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .api_models import MarketEventListRequestModel
+from .api_models import MarketEventListRequestModel, MarketEventReviewRequestModel
 from .config import get_settings
 from .event_kb.services import ExtractionService
 
@@ -181,6 +181,57 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    @app.get("/kb/simple/market-events/{event_key}/review")
+    def kb_get_market_event_review(event_key: str) -> dict[str, Any]:
+        try:
+            kb_service = ExtractionService()
+            return kb_service.kb_get_market_event_review(event_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/kb/simple/market-events/reviews/sessions")
+    def kb_list_market_event_review_session_ids() -> dict[str, Any]:
+        """Lightweight enumerate endpoint used by the calenderapp review-session
+        garbage collector. Returns ``items: [{event_key, vibe_session_id}]``
+        for every row whose vibe_session_id is non-empty."""
+        try:
+            kb_service = ExtractionService()
+            return kb_service.kb_list_market_event_review_session_ids()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.put("/kb/simple/market-events/{event_key}/review")
+    def kb_put_market_event_review(event_key: str, request: MarketEventReviewRequestModel) -> dict[str, Any]:
+        try:
+            kb_service = ExtractionService()
+            # Preserve partial-update semantics: callers such as the review GC
+            # may intentionally send only ``review_status`` plus
+            # ``vibe_session_id=""``. Using ``exclude_unset`` avoids blasting
+            # stored verdict fields with model defaults like ``review_payload={}``.
+            return kb_service.kb_upsert_market_event_review(
+                event_key,
+                request.model_dump(exclude_unset=True),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.post("/kb/simple/market-events/{event_key}/review/run")
+    def kb_run_market_event_review(event_key: str) -> dict[str, Any]:
+        try:
+            kb_service = ExtractionService()
+            result = kb_service.kb_run_market_event_review(event_key)
+            if not result.get("found", False):
+                raise HTTPException(status_code=404, detail=f"Market event not found: {event_key}")
+            return result
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @app.get("/kb/simple/events/{event_id}")
     def kb_query_simple_event_detail(event_id: str) -> dict[str, Any]:
         try:
@@ -214,6 +265,22 @@ def create_app() -> FastAPI:
             result = kb_service.kb_set_simple_event_favorite(event_id, is_favorite=False)
             if not result.get("found", False):
                 raise HTTPException(status_code=404, detail=f"Event not found: {event_id}")
+            return result
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.delete("/kb/simple/market-events/{event_key}/favorite")
+    def kb_unfavorite_market_event(event_key: str) -> dict[str, Any]:
+        """Bulk-unfavorite all simple-event favorites that belong to this
+        market event. Used by the /events page's per-card "remove" button.
+        """
+        try:
+            kb_service = ExtractionService()
+            result = kb_service.kb_unfavorite_market_event(event_key)
+            if not result.get("found", False):
+                raise HTTPException(status_code=404, detail=f"Market event not found: {event_key}")
             return result
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

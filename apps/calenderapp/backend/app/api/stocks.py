@@ -1,7 +1,7 @@
 from flask import make_response, request
 from flask_restx import Namespace, Resource, fields
 
-from app.api.params import parse_int
+from app.api.params import parse_bool, parse_int
 from app.services.csv_import_service import CsvImportService
 from app.services.stocks_service import StocksService
 from config.api_config import APIConstants, APIResponse
@@ -21,11 +21,27 @@ stock_model = stocks_ns.model(
 )
 
 
+def _parse_int_list_param(raw: str | None) -> list[int]:
+    if raw is None or str(raw).strip() == "":
+        return []
+    result: list[int] = []
+    for part in str(raw).split(","):
+        text = part.strip()
+        if not text:
+            continue
+        result.append(int(text))
+    return result
+
+
 @stocks_ns.route("/")
 class Stocks(Resource):
     @stocks_ns.param("page", "页码", type=int, default=APIConstants.DEFAULT_PAGE)
     @stocks_ns.param("page_size", "每页数量", type=int, default=APIConstants.DEFAULT_PAGE_SIZE)
     @stocks_ns.param("exchange", "交易所筛选")
+    @stocks_ns.param("is_favorite", "仅返回收藏 / 仅返回未收藏，true / false")
+    @stocks_ns.param("group_id", "按单个分组筛选", type=int)
+    @stocks_ns.param("tag_ids", "按标签筛选，逗号分隔")
+    @stocks_ns.param("ungrouped_only", "仅显示未分组股票，true / false")
     def get(self):
         args = request.args
         page = parse_int(args.get("page"), default=APIConstants.DEFAULT_PAGE, minimum=1)
@@ -36,7 +52,33 @@ class Stocks(Resource):
             maximum=APIConstants.MAX_PAGE_SIZE,
         )
         exchange = args.get("exchange")
-        result = StocksService.list_stocks(page=page, page_size=page_size, exchange=exchange)
+
+        # ``is_favorite`` is intentionally tri-valued — None means "no filter",
+        # True/False discriminate. Strings 'true'/'false'/'1'/'0' are accepted
+        # so query-string callers don't have to canonicalise.
+        raw_fav = args.get("is_favorite")
+        is_favorite: bool | None
+        if raw_fav is None or raw_fav == "":
+            is_favorite = None
+        elif str(raw_fav).strip().lower() in {"true", "1", "yes"}:
+            is_favorite = True
+        elif str(raw_fav).strip().lower() in {"false", "0", "no"}:
+            is_favorite = False
+        else:
+            is_favorite = None
+        group_id = parse_int(args.get("group_id"), default=None, minimum=1) if args.get("group_id") not in (None, "") else None
+        tag_ids = _parse_int_list_param(args.get("tag_ids"))
+        ungrouped_only = parse_bool(args.get("ungrouped_only"), default=False)
+
+        result = StocksService.list_stocks(
+            page=page,
+            page_size=page_size,
+            exchange=exchange,
+            is_favorite=is_favorite,
+            group_id=group_id,
+            tag_ids=tag_ids,
+            ungrouped_only=ungrouped_only,
+        )
         return APIResponse.paginated(data=result["items"], total=result["total"], page=page, page_size=page_size)
 
     @stocks_ns.expect(stock_model, validate=False)
@@ -181,6 +223,82 @@ class StockFavorite(Resource):
                     http_status=500,
                 ),
                 500,
+            )
+
+
+@stocks_ns.route("/<string:code>/organizer")
+class StockOrganizer(Resource):
+    def get(self, code: str):
+        try:
+            result = StocksService.get_organizer(code)
+            return APIResponse.success(result)
+        except ValueError as e:
+            return (
+                APIResponse.error(
+                    message=str(e),
+                    code=APIConstants.ERROR_CODES["NOT_FOUND"],
+                    http_status=404,
+                ),
+                404,
+            )
+
+    def put(self, code: str):
+        payload = request.get_json(force=True, silent=True) or {}
+        group_ids = payload.get("group_ids") or []
+        tag_ids = payload.get("tag_ids") or []
+        if not isinstance(group_ids, list) or not isinstance(tag_ids, list):
+            return (
+                APIResponse.error(
+                    message="group_ids 和 tag_ids 必须为数组",
+                    code=APIConstants.ERROR_CODES["VALIDATION_ERROR"],
+                    http_status=400,
+                ),
+                400,
+            )
+        try:
+            result = StocksService.update_organizer(code, group_ids=group_ids, tag_ids=tag_ids)
+            return APIResponse.success(result, message="更新成功")
+        except ValueError as e:
+            message = str(e)
+            status = 404 if "不存在" in message else 400
+            error_code = APIConstants.ERROR_CODES["NOT_FOUND"] if status == 404 else APIConstants.ERROR_CODES["VALIDATION_ERROR"]
+            return (
+                APIResponse.error(
+                    message=message,
+                    code=error_code,
+                    http_status=status,
+                ),
+                status,
+            )
+
+
+@stocks_ns.route("/<string:code>/note")
+class StockNoteByCode(Resource):
+    def put(self, code: str):
+        payload = request.get_json(force=True, silent=True) or {}
+        if "note" not in payload:
+            return (
+                APIResponse.error(
+                    message="缺少 note 字段",
+                    code=APIConstants.ERROR_CODES["VALIDATION_ERROR"],
+                    http_status=400,
+                ),
+                400,
+            )
+        try:
+            result = StocksService.update_note(code, payload.get("note"))
+            return APIResponse.success(result, message="备注已更新")
+        except ValueError as e:
+            message = str(e)
+            status = 404 if "不存在" in message else 400
+            error_code = APIConstants.ERROR_CODES["NOT_FOUND"] if status == 404 else APIConstants.ERROR_CODES["VALIDATION_ERROR"]
+            return (
+                APIResponse.error(
+                    message=message,
+                    code=error_code,
+                    http_status=status,
+                ),
+                status,
             )
 
 

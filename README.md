@@ -1,11 +1,11 @@
 # stock-platform
 
-`stock-platform` is the shared product root for the stock research workspace.
+`stock-platform` is the shared product root for the A-share event research workspace.
 
 Current direction:
 
 - keep `stockkb` as an independent structured event knowledge service
-- keep `calenderapp` as the user-facing application service
+- keep `calenderapp` as the user-facing `A股事件投研平台` application service
 - manage both inside one product workspace and converge scripts, docs, and config over time
 
 ## Why this root exists

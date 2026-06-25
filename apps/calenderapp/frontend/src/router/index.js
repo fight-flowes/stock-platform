@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { isAuthenticated } from '../utils/auth'
-import CalendarView from '../views/CalendarView.vue'
+import CalendarView from '../views/CalendarViewV2.vue'
 import EventsView from '../views/EventsView.vue'
 import StocksView from '../views/StocksView.vue'
 import LimitUpView from '../views/LimitUpView.vue'

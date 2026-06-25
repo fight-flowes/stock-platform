@@ -138,6 +138,11 @@ class ExtractionService:
         result["duckdb_path"] = str(self.kb_settings.duckdb_path)
         return result
 
+    def kb_unfavorite_market_event(self, event_key: str) -> dict[str, Any]:
+        result = self.duckdb.unfavorite_market_event(event_key)
+        result["duckdb_path"] = str(self.kb_settings.duckdb_path)
+        return result
+
     def kb_query_market_events(
         self,
         *,
@@ -169,6 +174,29 @@ class ExtractionService:
 
     def kb_query_market_event_filter_meta(self) -> dict[str, Any]:
         result = self.duckdb.query_market_event_filter_meta()
+        result["duckdb_path"] = str(self.kb_settings.duckdb_path)
+        return result
+
+    def kb_get_market_event_review(self, event_key: str) -> dict[str, Any]:
+        result = self.duckdb.get_market_event_review(event_key)
+        result["duckdb_path"] = str(self.kb_settings.duckdb_path)
+        return result
+
+    def kb_list_market_event_review_session_ids(self) -> dict[str, Any]:
+        items = self.duckdb.list_market_event_review_session_ids()
+        return {
+            "items": items,
+            "count": len(items),
+            "duckdb_path": str(self.kb_settings.duckdb_path),
+        }
+
+    def kb_upsert_market_event_review(self, event_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.duckdb.upsert_market_event_review(event_key, payload)
+        result["duckdb_path"] = str(self.kb_settings.duckdb_path)
+        return result
+
+    def kb_run_market_event_review(self, event_key: str) -> dict[str, Any]:
+        result = self.duckdb.set_market_event_review_pending(event_key)
         result["duckdb_path"] = str(self.kb_settings.duckdb_path)
         return result
 

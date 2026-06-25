@@ -145,6 +145,46 @@ class StockkbProxyService:
         }
 
     @classmethod
+    def list_all_events(
+        cls,
+        *,
+        stock_code: str,
+        report_date: str,
+        page_size: int = 200,
+        event_scope: str = "default",
+    ) -> Dict[str, Any]:
+        page_size = max(1, min(int(page_size), 200))
+        page = 1
+        aggregated_items: list[dict[str, Any]] = []
+        resolved_stock_code = (stock_code or "").strip()
+        while True:
+            payload = cls.list_events(
+                stock_code=resolved_stock_code or stock_code,
+                report_date=report_date,
+                page=page,
+                page_size=page_size,
+                event_scope=event_scope,
+            )
+            if page == 1:
+                resolved_stock_code = str(payload.get("stock_code") or resolved_stock_code or stock_code)
+            page_items = payload.get("items") or []
+            aggregated_items.extend(page_items)
+            if not payload.get("has_more") or not page_items:
+                return {
+                    "stock_code": resolved_stock_code,
+                    "report_date": report_date,
+                    "count": len(aggregated_items),
+                    "total_count": int(payload.get("total_count", len(aggregated_items)) or len(aggregated_items)),
+                    "page": 1,
+                    "page_size": page_size,
+                    "sort_by": str(payload.get("sort_by", "event_time_normalized") or "event_time_normalized"),
+                    "sort_order": str(payload.get("sort_order", "desc") or "desc"),
+                    "has_more": False,
+                    "items": aggregated_items,
+                }
+            page += 1
+
+    @classmethod
     def get_event_detail(cls, event_id: str) -> Dict[str, Any]:
         event_id = (event_id or "").strip()
         if not event_id:
@@ -173,6 +213,20 @@ class StockkbProxyService:
         if not event_id:
             raise ValueError("event_id 不能为空")
         return cls._request_json("DELETE", f"/kb/simple/events/{event_id}/favorite")
+
+    @classmethod
+    def unfavorite_market_event(cls, event_key: str) -> Dict[str, Any]:
+        """Proxy DELETE /kb/simple/market-events/{key}/favorite.
+
+        Bulk-unfavorites every simple event under the given market event.
+        Used by the /events page's per-card "remove" button — one click in
+        the UI fans out to clear all underlying simple-event favourites
+        that caused the market event to surface.
+        """
+        event_key = (event_key or "").strip()
+        if not event_key:
+            raise ValueError("event_key 不能为空")
+        return cls._request_json("DELETE", f"/kb/simple/market-events/{event_key}/favorite")
 
     @classmethod
     def list_market_events(
@@ -250,6 +304,72 @@ class StockkbProxyService:
             "date_max": str(payload.get("date_max") or ""),
         }
 
+    @classmethod
+    def get_market_event_review(cls, event_key: str) -> Dict[str, Any]:
+        event_key = (event_key or "").strip()
+        if not event_key:
+            raise ValueError("event_key 不能为空")
+        payload = cls._request_json("GET", f"/kb/simple/market-events/{event_key}/review")
+        review = payload.get("review")
+        normalized_review = cls._normalize_market_event_review(review) if isinstance(review, dict) else None
+        return {
+            "found": bool(payload.get("found", False) and normalized_review),
+            "event_key": str(payload.get("event_key") or event_key),
+            "review": normalized_review,
+        }
+
+    @classmethod
+    def list_market_event_review_session_ids(cls) -> list[Dict[str, str]]:
+        """Lightweight enumerate used by the GC sweep — returns one entry per
+        review row that currently points at an upstream Vibe-Trading session.
+        """
+        payload = cls._request_json("GET", "/kb/simple/market-events/reviews/sessions")
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return []
+        result: list[Dict[str, str]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            event_key = str(item.get("event_key") or "").strip()
+            sid = str(item.get("vibe_session_id") or "").strip()
+            if event_key and sid:
+                result.append({"event_key": event_key, "vibe_session_id": sid})
+        return result
+
+    @classmethod
+    def put_market_event_review(cls, event_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        event_key = (event_key or "").strip()
+        if not event_key:
+            raise ValueError("event_key 不能为空")
+        upstream = cls._request_json("PUT", f"/kb/simple/market-events/{event_key}/review", payload)
+        review = upstream.get("review")
+        normalized_review = cls._normalize_market_event_review(review) if isinstance(review, dict) else None
+        response: Dict[str, Any] = {
+            "found": bool(upstream.get("found", False) and normalized_review),
+            "event_key": str(upstream.get("event_key") or event_key),
+            "review": normalized_review,
+        }
+        event = upstream.get("event")
+        if isinstance(event, dict):
+            response["event"] = cls._normalize_market_event_detail(event)
+        return response
+
+    @classmethod
+    def run_market_event_review(cls, event_key: str) -> Dict[str, Any]:
+        event_key = (event_key or "").strip()
+        if not event_key:
+            raise ValueError("event_key 不能为空")
+        payload = cls._request_json("POST", f"/kb/simple/market-events/{event_key}/review/run")
+        review = payload.get("review")
+        event = payload.get("event")
+        return {
+            "found": bool(payload.get("found", False)),
+            "event_key": str(payload.get("event_key") or event_key),
+            "review": cls._normalize_market_event_review(review) if isinstance(review, dict) else None,
+            "event": cls._normalize_market_event_detail(event) if isinstance(event, dict) else None,
+        }
+
     @staticmethod
     def _stock_code_candidates(stock_code: str) -> list[str]:
         raw = (stock_code or "").strip().upper()
@@ -309,8 +429,14 @@ class StockkbProxyService:
         normalized["latest_active_date"] = str(normalized.get("latest_active_date") or "")
         normalized["active_dates"] = cls._parse_string_list(normalized.get("active_dates"))
         normalized["is_cross_stock"] = bool(normalized.get("is_cross_stock", False))
+        # is_active is DEPRECATED — see kb_market_event schema notes. Frozen at
+        # False for new rows; pass through as-is for historical rows so the
+        # contract stays stable while the activity concept is being redesigned.
         normalized["is_active"] = bool(normalized.get("is_active", False))
         normalized["is_favorite"] = bool(normalized.get("is_favorite", False))
+        normalized["review_status"] = str(normalized.get("review_status") or "")
+        normalized["event_truth"] = str(normalized.get("event_truth") or "")
+        normalized["review_updated_at"] = str(normalized.get("review_updated_at") or "")
         return normalized
 
     @classmethod
@@ -457,6 +583,30 @@ class StockkbProxyService:
         normalized["affected_stock_count"] = int(normalized.get("affected_stock_count") or 0)
         normalized["stocks"] = cls._parse_affected_stocks(normalized.get("stocks"))
         normalized["source_report_count"] = int(normalized.get("source_report_count") or 0)
+        return normalized
+
+    @classmethod
+    def _normalize_market_event_review(cls, item: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(item)
+        normalized["event_key"] = str(normalized.get("event_key") or "")
+        normalized["review_status"] = str(normalized.get("review_status") or "")
+        normalized["review_version"] = str(normalized.get("review_version") or "")
+        normalized["review_source"] = str(normalized.get("review_source") or "")
+        normalized["vibe_session_id"] = str(normalized.get("vibe_session_id") or "")
+        normalized["event_truth"] = str(normalized.get("event_truth") or "")
+        normalized["time_truth"] = str(normalized.get("time_truth") or "")
+        normalized["content_truth"] = str(normalized.get("content_truth") or "")
+        normalized["disposition"] = str(normalized.get("disposition") or "")
+        normalized["confidence"] = float(normalized.get("confidence") or 0.0)
+        normalized["headline"] = str(normalized.get("headline") or "")
+        normalized["summary"] = str(normalized.get("summary") or "")
+        normalized["review_payload"] = normalized.get("review_payload") if isinstance(normalized.get("review_payload"), dict) else {}
+        normalized["source_snapshot"] = normalized.get("source_snapshot") if isinstance(normalized.get("source_snapshot"), dict) else {}
+        normalized["error_message"] = str(normalized.get("error_message") or "")
+        normalized["requested_at"] = str(normalized.get("requested_at") or "")
+        normalized["completed_at"] = str(normalized.get("completed_at") or "")
+        normalized["created_at"] = str(normalized.get("created_at") or "")
+        normalized["updated_at"] = str(normalized.get("updated_at") or "")
         return normalized
 
     @staticmethod

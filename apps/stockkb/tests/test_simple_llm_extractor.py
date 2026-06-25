@@ -6,6 +6,7 @@ from stockrag.event_kb.extractors.simple_llm_extractor import (
     _backfill_source_metadata,
     _build_event_section_bundles,
     _collect_blocks,
+    _parse_simple_response,
 )
 from stockrag.event_kb.parsers import parse_markdown_document
 from stockrag.event_kb.schemas import SimpleEventCandidate
@@ -83,6 +84,27 @@ URL：https://caifuhao.eastmoney.com/news/example
 
         self.assertEqual(updated[0].source_name, "东方财富")
         self.assertEqual(updated[0].source_url, "https://caifuhao.eastmoney.com/news/example")
+
+    def test_parse_simple_response_keeps_multiline_report_summaries(self) -> None:
+        events, report_summary = _parse_simple_response(
+            {
+                "events": [],
+                "core_logic": "超级电容板块受AI电源需求预期催化走强。\n黑猫股份叠加材料送样和产能进展，成为板块受益标的。",
+                "risk_summary": "GB300 放量节奏仍有不确定性。\n公司新材料业务订单转化也需要继续验证。",
+            },
+            primary_stock_code="002068.SZ",
+            primary_stock_name="黑猫股份",
+        )
+
+        self.assertEqual(events, [])
+        self.assertEqual(
+            report_summary.core_logic,
+            "超级电容板块受AI电源需求预期催化走强。\n黑猫股份叠加材料送样和产能进展，成为板块受益标的。",
+        )
+        self.assertEqual(
+            report_summary.risk_summary,
+            "GB300 放量节奏仍有不确定性。\n公司新材料业务订单转化也需要继续验证。",
+        )
 
 
 if __name__ == "__main__":

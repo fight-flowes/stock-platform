@@ -16,6 +16,7 @@ from .simple import (
     SimpleEventRecord,
     SimpleReportBundle,
     SimpleReportRecord,
+    SimpleReportSummary,
     SimpleRiskSummary,
 )
 
@@ -33,5 +34,6 @@ __all__ = [
     "SimpleEventRecord",
     "SimpleReportBundle",
     "SimpleReportRecord",
+    "SimpleReportSummary",
     "SimpleRiskSummary",
 ]

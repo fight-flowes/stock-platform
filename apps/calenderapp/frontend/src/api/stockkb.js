@@ -29,6 +29,13 @@ export function unfavoriteStockkbEvent(eventId) {
   return api.delete(`/api/stockkb/events/${eventId}/favorite`)
 }
 
+export function unfavoriteMarketEvent(eventKey) {
+  // Bulk-unfavorite the whole market event — one click from the /events
+  // page clears every underlying simple-event favorite tied to this
+  // event_key, removing the card from the favourites-only list.
+  return api.delete(`/api/stockkb/market-events/${eventKey}/favorite`)
+}
+
 export function listMarketEvents(payload) {
   return api.post('/api/stockkb/market-events', payload)
 }
@@ -43,4 +50,16 @@ export function getMarketEventTimeline(eventKey) {
 
 export function getMarketEventFilterMeta() {
   return api.get('/api/stockkb/market-events/filters/meta')
+}
+
+export function getMarketEventReview(eventKey) {
+  return api.get(`/api/stockkb/market-events/${eventKey}/review`)
+}
+
+export function runMarketEventReview(eventKey) {
+  return api.post(`/api/stockkb/market-events/${eventKey}/review/run`)
+}
+
+export function refreshMarketEventReview(eventKey) {
+  return api.post(`/api/stockkb/market-events/${eventKey}/review/refresh`)
 }

@@ -49,6 +49,15 @@ class SimpleRiskSummary:
 
 
 @dataclass(slots=True)
+class SimpleReportSummary:
+    core_logic: str = ""
+    risk_summary: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class SimpleReportRecord:
     report_id: str
     source_path: str

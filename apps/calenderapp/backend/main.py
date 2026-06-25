@@ -1,6 +1,7 @@
 import os
 
 from app import create_app
+from app.scheduler import ReviewGCScheduler
 from app.utils.logging_config import setup_logging, request_id_middleware
 
 
@@ -11,6 +12,9 @@ app = create_app()
 
 # 添加请求 ID 中间件
 app.before_request(request_id_middleware)
+
+# 启动后台清理任务（每事件 1 个 Vibe-Trading session 后剩下的死引用 / 孤儿 session）
+ReviewGCScheduler.start()
 
 
 if __name__ == "__main__":

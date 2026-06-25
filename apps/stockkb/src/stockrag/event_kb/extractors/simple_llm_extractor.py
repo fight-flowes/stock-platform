@@ -13,7 +13,7 @@ from ..schemas import (
     MarkdownDocument,
     SimpleAffectedStock,
     SimpleEventCandidate,
-    SimpleRiskSummary,
+    SimpleReportSummary,
 )
 from .event_normalizer import normalize_simple_events
 
@@ -119,7 +119,8 @@ _SIMPLE_SYSTEM_PROMPT = """你是A股涨停分析报告的事件抽取器。
 8. affected_stocks：受影响个股列表
 9. affected_industries：受影响行业列表
 10. affected_themes：受影响主题/概念列表
-11. risk_summary：整份报告只输出一条风险摘要，用一句话概括最重要风险
+11. core_logic：输出“上涨逻辑”报告级摘要，用 2-4 句写成可读的短段落，讲清楚为什么涨
+12. risk_summary：输出“风险摘要”报告级摘要，用 2-4 句写成可读的短段落，讲清楚主要不确定性
 
 事件定义：
 - 事件必须是“外部发生的新信息”或“能够改变估值、预期、交易情绪、资金行为的触发器”
@@ -158,7 +159,10 @@ _SIMPLE_SYSTEM_PROMPT = """你是A股涨停分析报告的事件抽取器。
   - mixed：既有明确行业催化，又明确落到若干重点公司
   - macro：宏观、监管、跨行业制度变化
 - 不要把所有事件都判成 stock；只要核心影响对象明显是行业/板块/主题，就应优先判为 industry 或 mixed
-- risk_summary 只允许一条，不要拆成多条风险事件
+- core_logic 必须是“可读的短段落摘要”，不是标签。禁止只输出“板块驱动型 / 事件驱动型 / 情绪驱动型 / 资金驱动型 / 个股驱动型”这类分类词
+- core_logic 优先覆盖：板块/主题催化、关键外部事件、公司自身受益点或兑现抓手
+- risk_summary 只允许一条报告级摘要，不要拆成多条风险事件
+- core_logic 和 risk_summary 都写成 2-4 句短段落，总长度控制在大约 60-220 字，基于报告事实，不要空泛发挥
 - 优先保证召回完整，最多输出 8 条正式事件
 - 如果某条行业/官方数据明显是板块催化源头，不要漏掉
 
@@ -200,6 +204,7 @@ _SIMPLE_SYSTEM_PROMPT = """你是A股涨停分析报告的事件抽取器。
       "review_reason": ""
     }
   ],
+  "core_logic": "...",
   "risk_summary": "..."
 }
 
@@ -267,13 +272,13 @@ def extract_simple_events_and_risk(
     *,
     primary_stock_code: str = "",
     primary_stock_name: str = "",
-) -> tuple[list[SimpleEventCandidate], SimpleRiskSummary]:
+) -> tuple[list[SimpleEventCandidate], SimpleReportSummary]:
     if not kb_settings.llm_extract_enabled:
-        return [], SimpleRiskSummary(summary_text="")
+        return [], SimpleReportSummary()
 
     blocks = _collect_blocks(document, kb_settings.llm_extract_max_blocks)
     if not blocks:
-        return [], SimpleRiskSummary(summary_text="")
+        return [], SimpleReportSummary()
 
     payload = json.dumps(
         {
@@ -286,7 +291,7 @@ def extract_simple_events_and_risk(
         indent=2,
     )
     if not kb_settings.llm_extract_base_url or not kb_settings.llm_extract_model:
-        return [], SimpleRiskSummary(summary_text="")
+        return [], SimpleReportSummary()
 
     parsed = _call_simple_llm(payload, kb_settings, system_prompt=_SIMPLE_SYSTEM_PROMPT)
     events, risk_summary = _parse_simple_response(parsed, primary_stock_code, primary_stock_name)
@@ -601,7 +606,7 @@ def _parse_simple_response(
     payload: dict[str, Any],
     primary_stock_code: str,
     primary_stock_name: str,
-) -> tuple[list[SimpleEventCandidate], SimpleRiskSummary]:
+) -> tuple[list[SimpleEventCandidate], SimpleReportSummary]:
     events: list[SimpleEventCandidate] = []
     for item in payload.get("events", []):
         event_name = _clean_text(str(item.get("event_name", "")))
@@ -632,10 +637,11 @@ def _parse_simple_response(
                 review_reason=_clean_text(str(item.get("review_reason", ""))),
             )
         )
-    risk_summary = SimpleRiskSummary(
-        summary_text=_clean_text(str(payload.get("risk_summary", ""))),
+    report_summary = SimpleReportSummary(
+        core_logic=_clean_summary_text(str(payload.get("core_logic", ""))),
+        risk_summary=_clean_summary_text(str(payload.get("risk_summary", ""))),
     )
-    return events[:_MAX_SIMPLE_EVENTS], risk_summary
+    return events[:_MAX_SIMPLE_EVENTS], report_summary
 
 
 def _parse_simple_events(
@@ -879,6 +885,23 @@ def _clean_text(text: str) -> str:
     cleaned = (text or "").replace("**", " ").replace("__", " ")
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned.strip()
+
+
+def _clean_summary_text(text: str) -> str:
+    lines = [re.sub(r"\s+", " ", line).strip() for line in str(text or "").replace("\r\n", "\n").split("\n")]
+    cleaned_lines: list[str] = []
+    previous_blank = False
+    for line in lines:
+        if not line:
+            if cleaned_lines and not previous_blank:
+                cleaned_lines.append("")
+            previous_blank = True
+            continue
+        cleaned_lines.append(line)
+        previous_blank = False
+    while cleaned_lines and cleaned_lines[-1] == "":
+        cleaned_lines.pop()
+    return "\n".join(cleaned_lines).strip()
 
 
 def _extract_source_name(text: str) -> str:

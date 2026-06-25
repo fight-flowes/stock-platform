@@ -7,10 +7,9 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 
 from app.db import session_scope
-from app.models.event import CalendarEvent
 from app.models.stock import Stock
 
 
@@ -105,7 +104,6 @@ class ImportResult:
 
 class CsvImportService:
     STOCK_TEMPLATE_HEADERS = ["code", "name", "exchange"]
-    EVENT_TEMPLATE_HEADERS = ["event_date", "title", "importance", "event_type", "source", "description", "stock_list"]
 
     @staticmethod
     def stocks_template_csv() -> str:
@@ -113,14 +111,6 @@ class CsvImportService:
         writer = csv.writer(out, lineterminator="\n")
         writer.writerow(CsvImportService.STOCK_TEMPLATE_HEADERS)
         writer.writerow(["600519", "贵州茅台", "SH"])
-        return out.getvalue()
-
-    @staticmethod
-    def events_template_csv() -> str:
-        out = io.StringIO()
-        writer = csv.writer(out, lineterminator="\n")
-        writer.writerow(CsvImportService.EVENT_TEMPLATE_HEADERS)
-        writer.writerow(["2026-02-12", "普通日示例：关注公告", "3", "other", "csv", "用于批量导入示例", "000001,600519"])
         return out.getvalue()
 
     @staticmethod
@@ -180,104 +170,4 @@ class CsvImportService:
             error_csv_base64=error_csv_base64,
             error_rows=errors,
             warning_rows=[],
-        )
-
-    @staticmethod
-    def import_events_csv(data: bytes, *, filename: str = "events.csv") -> ImportResult:
-        text = _decode_utf8_csv(data)
-        reader = csv.DictReader(io.StringIO(text))
-        ok, missing = _validate_headers(reader.fieldnames or [], ["event_date", "title"])
-        if not ok:
-            raise ValueError(f"CSV 表头缺失字段: {', '.join(missing)}")
-
-        created = 0
-        updated = 0
-        errors = []
-        warnings = []
-        total = 0
-
-        with session_scope() as session:
-            for idx, row in enumerate(reader, start=2):
-                total += 1
-                try:
-                    event_date = _parse_date_ymd(row.get("event_date"))
-                    title = _norm(row.get("title"))
-                    if not title:
-                        raise ValueError("title 不能为空")
-                    if len(title) > 512:
-                        raise ValueError("title 过长")
-
-                    importance = _parse_int_range(row.get("importance"), field="importance", default=3, minimum=1, maximum=5)
-                    event_type = _norm(row.get("event_type")) or None
-                    source = _norm(row.get("source")) or None
-                    description = _norm(row.get("description")) or None
-                    stock_list = _parse_stock_list(row.get("stock_list"))
-
-                    missing_stocks = []
-                    if stock_list:
-                        exist_codes = set(
-                            session.execute(select(Stock.code).where(Stock.code.in_(stock_list))).scalars().all()
-                        )
-                        missing_stocks = [c for c in stock_list if c not in exist_codes]
-                    if missing_stocks:
-                        warnings.append(
-                            {
-                                "row": idx,
-                                "warning": f"股票代码不存在: {', '.join(missing_stocks)}",
-                                **{k: (row.get(k) or "") for k in (reader.fieldnames or [])},
-                            }
-                        )
-
-                    matched = session.execute(
-                        select(CalendarEvent)
-                        .where(
-                            and_(
-                                CalendarEvent.event_date == event_date,
-                                CalendarEvent.title == title,
-                                CalendarEvent.event_type.is_(event_type) if event_type is None else CalendarEvent.event_type == event_type,
-                            )
-                        )
-                        .order_by(CalendarEvent.id.desc())
-                        .limit(1)
-                    ).scalars().first()
-
-                    if matched:
-                        matched.importance = importance
-                        matched.source = source
-                        matched.description = description
-                        matched.stock_list = stock_list
-                        updated += 1
-                    else:
-                        session.add(
-                            CalendarEvent(
-                                event_date=event_date,
-                                title=title,
-                                importance=importance,
-                                event_type=event_type,
-                                source=source,
-                                description=description,
-                                stock_list=stock_list,
-                            )
-                        )
-                        created += 1
-                except Exception as e:
-                    errors.append({"row": idx, "error": str(e), **{k: (row.get(k) or "") for k in (reader.fieldnames or [])}})
-
-        error_csv_base64 = None
-        error_csv_filename = None
-        if errors:
-            headers = ["row", "error"] + (reader.fieldnames or [])
-            error_csv_base64 = _error_csv_base64(headers, errors)
-            error_csv_filename = f"import_errors_{filename}"
-
-        return ImportResult(
-            total=total,
-            created=created,
-            updated=updated,
-            failed=len(errors),
-            warnings=len(warnings),
-            error_csv_filename=error_csv_filename,
-            error_csv_base64=error_csv_base64,
-            error_rows=errors,
-            warning_rows=warnings,
         )

@@ -48,6 +48,9 @@ class MarketEventListItem:
     latest_active_date: str = ""
     active_dates: list[str] = field(default_factory=list)
     is_cross_stock: bool = False
+    # DEPRECATED — frozen at False for new rows; historical data preserved.
+    # Old definition: "latest_active_date within 5 days". UI badge removed.
+    # See market_event_builder._is_active_date for the historical heuristic.
     is_active: bool = False
     is_favorite: bool = False
 

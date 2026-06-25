@@ -17,6 +17,7 @@ class Stock(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     exchange: Mapped[Optional[str]] = mapped_column(String(16), index=True, nullable=True)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    favorited_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # 缓存的行情数据
     cache_close: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -42,6 +43,7 @@ class Stock(Base):
             "name": self.name,
             "exchange": self.exchange,
             "is_favorite": self.is_favorite,
+            "favorited_at": self.favorited_at.isoformat() if self.favorited_at else None,
             "cache_close": self.cache_close,
             "cache_pct_chg": self.cache_pct_chg,
             "cache_total_mv": self.cache_total_mv,

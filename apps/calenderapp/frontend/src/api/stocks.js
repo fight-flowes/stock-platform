@@ -45,8 +45,14 @@ export function upsertStock(payload) {
   return api.post('/api/stocks/', payload)
 }
 
-export function importStocksCsv(file) {
-  const form = new FormData()
-  form.append('file', file)
-  return api.post('/api/stocks/import', form, { headers: { 'Content-Type': 'multipart/form-data' } })
+export function getStockOrganizer(code) {
+  return api.get(`/api/stocks/${code}/organizer`)
+}
+
+export function updateStockOrganizer(code, payload) {
+  return api.put(`/api/stocks/${code}/organizer`, payload)
+}
+
+export function updateStockNote(code, payload) {
+  return api.put(`/api/stocks/${code}/note`, payload)
 }
